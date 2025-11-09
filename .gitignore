@@ -17,9 +17,22 @@ Makefile
 
 # Test outputs
 Testing/
+test_diagnostics
+test_matrix_ops
+test_mlp
+test_attention
+test_eos_handling
+test_loss_gradient
 
 # Model files
 *.bin
+
+# Diagnostic logs
+diagnostics_logs/
+debug_logs/
+baseline_logs/
+logs/
+*.csv
 
 # IDE files
 .vscode/
