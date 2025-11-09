@@ -70,7 +70,11 @@ void MLP::allocate_memory() {
     CUDA_CHECK(cudaMalloc(&d_Y, max_batch_size * h4 * sizeof(float)));
 
     // Temporary buffers (for matrix multiplications)
-    int max_temp_size = max_batch_size * std::max({h1, h2, h3, h4});
+    int max_layer_size = h1;
+    if (h2 > max_layer_size) max_layer_size = h2;
+    if (h3 > max_layer_size) max_layer_size = h3;
+    if (h4 > max_layer_size) max_layer_size = h4;
+    int max_temp_size = max_batch_size * max_layer_size;
     CUDA_CHECK(cudaMalloc(&d_temp1, max_temp_size * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_temp2, max_temp_size * sizeof(float)));
 
