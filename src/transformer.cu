@@ -1129,32 +1129,32 @@ float Transformer::train_step(
     // Update embeddings and output projection
     adam_update(d_token_embeddings, d_grad_token_embeddings,
                d_m_token_embeddings, d_v_token_embeddings,
-               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                vocab_size * d_model);
 
     adam_update(d_position_embeddings, d_grad_position_embeddings,
                d_m_position_embeddings, d_v_position_embeddings,
-               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                max_seq_len * d_model);
 
     adam_update(d_output_weights, d_grad_output_weights,
                d_m_output_weights, d_v_output_weights,
-               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                d_model * vocab_size);
 
     adam_update(d_output_bias, d_grad_output_bias,
                d_m_output_bias, d_v_output_bias,
-               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                vocab_size);
 
     adam_update(d_ln_final_gamma, d_grad_ln_final_gamma,
                d_m_ln_final_gamma, d_v_ln_final_gamma,
-               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                d_model);
 
     adam_update(d_ln_final_beta, d_grad_ln_final_beta,
                d_m_ln_final_beta, d_v_ln_final_beta,
-               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                d_model);
 
     // Update each TransformerBlock's parameters
@@ -1166,77 +1166,77 @@ float Transformer::train_step(
         // Layer norm 1
         adam_update(block->d_ln1_gamma, grads.d_grad_ln1_gamma,
                    optim.d_m_ln1_gamma, optim.d_v_ln1_gamma,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
         adam_update(block->d_ln1_beta, grads.d_grad_ln1_beta,
                    optim.d_m_ln1_beta, optim.d_v_ln1_beta,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
 
         // Layer norm 2
         adam_update(block->d_ln2_gamma, grads.d_grad_ln2_gamma,
                    optim.d_m_ln2_gamma, optim.d_v_ln2_gamma,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
         adam_update(block->d_ln2_beta, grads.d_grad_ln2_beta,
                    optim.d_m_ln2_beta, optim.d_v_ln2_beta,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
 
         // Attention parameters
         adam_update(block->attention->d_W_Q, grads.d_grad_attn_W_Q,
                    optim.d_m_attn_W_Q, optim.d_v_attn_W_Q,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model * d_model);
         adam_update(block->attention->d_b_Q, grads.d_grad_attn_b_Q,
                    optim.d_m_attn_b_Q, optim.d_v_attn_b_Q,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
 
         adam_update(block->attention->d_W_K, grads.d_grad_attn_W_K,
                    optim.d_m_attn_W_K, optim.d_v_attn_W_K,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model * d_model);
         adam_update(block->attention->d_b_K, grads.d_grad_attn_b_K,
                    optim.d_m_attn_b_K, optim.d_v_attn_b_K,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
 
         adam_update(block->attention->d_W_V, grads.d_grad_attn_W_V,
                    optim.d_m_attn_W_V, optim.d_v_attn_W_V,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model * d_model);
         adam_update(block->attention->d_b_V, grads.d_grad_attn_b_V,
                    optim.d_m_attn_b_V, optim.d_v_attn_b_V,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
 
         adam_update(block->attention->d_W_O, grads.d_grad_attn_W_O,
                    optim.d_m_attn_W_O, optim.d_v_attn_W_O,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model * d_model);
         adam_update(block->attention->d_b_O, grads.d_grad_attn_b_O,
                    optim.d_m_attn_b_O, optim.d_v_attn_b_O,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
 
         // FFN parameters
         adam_update(block->ffn->d_W1, grads.d_grad_ffn_W1,
                    optim.d_m_ffn_W1, optim.d_v_ffn_W1,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_ff * d_model);
         adam_update(block->ffn->d_b1, grads.d_grad_ffn_b1,
                    optim.d_m_ffn_b1, optim.d_v_ffn_b1,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_ff);
 
         adam_update(block->ffn->d_W2, grads.d_grad_ffn_W2,
                    optim.d_m_ffn_W2, optim.d_v_ffn_W2,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model * d_ff);
         adam_update(block->ffn->d_b2, grads.d_grad_ffn_b2,
                    optim.d_m_ffn_b2, optim.d_v_ffn_b2,
-                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t, weight_decay,
                    d_model);
     }
 

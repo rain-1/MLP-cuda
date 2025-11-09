@@ -174,6 +174,7 @@ private:
     float beta1 = 0.9f;
     float beta2 = 0.999f;
     float epsilon = 1e-8f;
+    float weight_decay = 0.01f;  // L2 regularization to prevent weight explosion
 
     // Adam momentum buffers for embeddings and output
     float *d_m_token_embeddings, *d_v_token_embeddings;
