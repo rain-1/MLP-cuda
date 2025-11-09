@@ -221,3 +221,122 @@ void scaled_dot_product_attention(
     //    Output: [Bh, N, d_v]
     matmul(d_attn_weights_buffer, d_V, d_output, Bh * N, M, d_v);
 }
+
+// Backward passes
+
+// Batched softmax backward kernel
+__global__ void batched_softmax_backward_kernel(
+    const float* grad_output,      // [B, N, M]
+    const float* softmax_output,   // [B, N, M]
+    float* grad_input,             // [B, N, M]
+    int B, int N, int M
+) {
+    extern __shared__ float sdata[];
+
+    int batch_seq = blockIdx.x;  // 0 to B*N-1
+    int tid = threadIdx.x;
+
+    if (batch_seq >= B * N) return;
+
+    const float* y = softmax_output + batch_seq * M;
+    const float* dy = grad_output + batch_seq * M;
+    float* dx = grad_input + batch_seq * M;
+
+    // Compute sum = Σ_j (dy[j] * y[j])
+    float sum = 0.0f;
+    for (int m = tid; m < M; m += blockDim.x) {
+        sum += dy[m] * y[m];
+    }
+
+    sdata[tid] = sum;
+    __syncthreads();
+
+    // Reduction
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
+    }
+    sum = sdata[0];
+    __syncthreads();
+
+    // Compute gradient: dx[i] = y[i] * (dy[i] - sum)
+    for (int m = tid; m < M; m += blockDim.x) {
+        dx[m] = y[m] * (dy[m] - sum);
+    }
+}
+
+void batched_softmax_backward(
+    const float* d_grad_output,
+    const float* d_softmax_output,
+    float* d_grad_input,
+    int B, int N, int M
+) {
+    int blockSize = 256;
+    int gridSize = B * N;
+    size_t sharedMemSize = blockSize * sizeof(float);
+
+    batched_softmax_backward_kernel<<<gridSize, blockSize, sharedMemSize>>>(
+        d_grad_output, d_softmax_output, d_grad_input, B, N, M
+    );
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void scaled_dot_product_attention_backward(
+    const float* d_Q,
+    const float* d_K,
+    const float* d_V,
+    const float* d_attn_weights,
+    const float* d_grad_output,
+    float* d_grad_Q,
+    float* d_grad_K,
+    float* d_grad_V,
+    float* d_grad_scores_buffer,
+    float* d_grad_attn_buffer,
+    int Bh, int N, int M, int d_k, int d_v,
+    const float* d_mask
+) {
+    float scale = 1.0f / sqrtf((float)d_k);
+
+    // Backward through: Output = Attn · V
+    // grad_Attn = grad_Output · V^T
+    // grad_V = Attn^T · grad_Output
+    matmul_backward(
+        d_grad_output,       // grad_C [Bh*N x d_v]
+        d_attn_weights,      // A [Bh*N x M]
+        d_V,                 // B [M x d_v] -- wait, V is [Bh*M x d_v]
+        d_grad_attn_buffer,  // grad_A [Bh*N x M]
+        d_grad_V,            // grad_B [M x d_v]
+        Bh * N,              // M_mat
+        M,                   // K_mat
+        d_v                  // N_mat
+    );
+
+    // Backward through softmax
+    batched_softmax_backward(
+        d_grad_attn_buffer,    // grad_output [Bh, N, M]
+        d_attn_weights,        // softmax_output [Bh, N, M]
+        d_grad_scores_buffer,  // grad_input [Bh, N, M]
+        Bh, N, M
+    );
+
+    // Backward through scaling
+    scale_matrix(d_grad_scores_buffer, scale, Bh * N * M);
+
+    // Note: Mask backward is not needed (mask is constant)
+
+    // Backward through: Scores = Q · K^T
+    // grad_Q = grad_Scores · K
+    // grad_K = grad_Scores^T · Q
+    matmul_transB_backward(
+        d_grad_scores_buffer,  // grad_C [Bh*N x M]
+        d_Q,                   // A [Bh*N x d_k]
+        d_K,                   // B [M x d_k] -- wait, K is [Bh*M x d_k]
+        d_grad_Q,              // grad_A [Bh*N x d_k]
+        d_grad_K,              // grad_B [M x d_k]
+        Bh * N,                // M_mat
+        d_k,                   // K_mat
+        M                      // N_mat
+    );
+}

@@ -50,4 +50,32 @@ void apply_attention_mask(
     int B, int N, int M
 );
 
+// Backward passes
+
+// Batched softmax backward
+// grad_output, softmax_output: [B, N, M]
+// Computes: grad_input[i] = softmax[i] * (grad_output[i] - Σ_j(grad_output[j] * softmax[j]))
+void batched_softmax_backward(
+    const float* d_grad_output,
+    const float* d_softmax_output,
+    float* d_grad_input,
+    int B, int N, int M
+);
+
+// Scaled dot-product attention backward
+void scaled_dot_product_attention_backward(
+    const float* d_Q,                    // Forward input [Bh, N, d_k]
+    const float* d_K,                    // Forward input [Bh, M, d_k]
+    const float* d_V,                    // Forward input [Bh, M, d_v]
+    const float* d_attn_weights,         // Saved from forward [Bh, N, M]
+    const float* d_grad_output,          // Gradient w.r.t. output [Bh, N, d_v]
+    float* d_grad_Q,                     // Gradient w.r.t. Q [Bh, N, d_k]
+    float* d_grad_K,                     // Gradient w.r.t. K [Bh, M, d_k]
+    float* d_grad_V,                     // Gradient w.r.t. V [Bh, M, d_v]
+    float* d_grad_scores_buffer,         // Temporary [Bh, N, M]
+    float* d_grad_attn_buffer,           // Temporary [Bh, N, M]
+    int Bh, int N, int M, int d_k, int d_v,
+    const float* d_mask = nullptr
+);
+
 #endif // ATTENTION_OPS_H
