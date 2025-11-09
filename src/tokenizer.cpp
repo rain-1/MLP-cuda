@@ -169,8 +169,8 @@ void Tokenizer::load_vocab(const char* filename) {
 
     file.close();
 
-    // Restore special token IDs
-    pad_id = char_to_id['<PAD>'];
-    bos_id = char_to_id['<BOS>'];
-    eos_id = char_to_id['<EOS>'];
+    // Restore special token IDs (these are always fixed)
+    pad_id = 0;
+    bos_id = 1;
+    eos_id = 2;
 }
