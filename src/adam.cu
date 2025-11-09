@@ -4,10 +4,11 @@
 #include <stdio.h>
 #include <math.h>
 
-// Adam update kernel
+// Adam update kernel with weight decay (AdamW)
 __global__ void adam_update_kernel(float* param, const float* grad, float* m, float* v,
                                     float lr, float beta1, float beta2, float epsilon,
-                                    float beta1_corr, float beta2_corr, int size) {
+                                    float beta1_corr, float beta2_corr, float weight_decay,
+                                    int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < size) {
@@ -21,15 +22,16 @@ __global__ void adam_update_kernel(float* param, const float* grad, float* m, fl
         float m_hat = m[idx] / beta1_corr;
         float v_hat = v[idx] / beta2_corr;
 
-        // Update parameter
-        param[idx] -= lr * m_hat / (sqrtf(v_hat) + epsilon);
+        // Apply weight decay (decoupled, AdamW style)
+        // Update parameter: param = param * (1 - lr * weight_decay) - lr * m_hat / (sqrt(v_hat) + epsilon)
+        param[idx] = param[idx] * (1.0f - lr * weight_decay) - lr * m_hat / (sqrtf(v_hat) + epsilon);
     }
 }
 
 // Host function
 void adam_update(float* d_param, const float* d_grad, float* d_m, float* d_v,
                  float lr, float beta1, float beta2, float epsilon,
-                 float beta1_t, float beta2_t, int size) {
+                 float beta1_t, float beta2_t, int size, float weight_decay) {
     int blockSize = 256;
     int gridSize = (size + blockSize - 1) / blockSize;
 
@@ -39,6 +41,6 @@ void adam_update(float* d_param, const float* d_grad, float* d_m, float* d_v,
 
     adam_update_kernel<<<gridSize, blockSize>>>(d_param, d_grad, d_m, d_v,
                                                  lr, beta1, beta2, epsilon,
-                                                 beta1_corr, beta2_corr, size);
+                                                 beta1_corr, beta2_corr, weight_decay, size);
     CUDA_CHECK(cudaGetLastError());
 }

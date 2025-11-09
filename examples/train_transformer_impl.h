@@ -58,8 +58,8 @@ int run_training(
     // Training hyperparameters
     int batch_size = 8;
     int num_epochs = 10;
-    float base_learning_rate = 1e-3f;
-    int warmup_steps = 500;  // Linear warmup for first 500 steps
+    float base_learning_rate = 5e-4f;  // Reduced from 1e-3 for stability
+    int warmup_steps = 1000;  // Increased warmup period for gradual ramp-up
 
     int vocab_size = tokenizer.vocab_size();
 

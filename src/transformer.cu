@@ -1090,8 +1090,9 @@ float Transformer::train_step(
     // Backward pass
     backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
 
-    // Clip gradients to prevent explosion (max_norm = 1.0)
-    clip_gradients_by_norm(1.0f);
+    // Clip gradients to prevent explosion (max_norm = 5.0)
+    // Using 5.0 instead of 1.0 to avoid over-aggressive clipping
+    clip_gradients_by_norm(5.0f);
 
     // ========================================================================
     // Apply Adam optimizer updates
@@ -1121,7 +1122,7 @@ float Transformer::train_step(
     adam_update(d_output_weights, d_grad_output_weights,
                d_m_output_weights, d_v_output_weights,
                learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-               d_model * vocab_size);
+               d_model * vocab_size, weight_decay);
 
     adam_update(d_output_bias, d_grad_output_bias,
                d_m_output_bias, d_v_output_bias,
@@ -1168,7 +1169,7 @@ float Transformer::train_step(
         adam_update(block->attention->d_W_Q, grads.d_grad_attn_W_Q,
                    optim.d_m_attn_W_Q, optim.d_v_attn_W_Q,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_model);
+                   d_model * d_model, weight_decay);
         adam_update(block->attention->d_b_Q, grads.d_grad_attn_b_Q,
                    optim.d_m_attn_b_Q, optim.d_v_attn_b_Q,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1177,7 +1178,7 @@ float Transformer::train_step(
         adam_update(block->attention->d_W_K, grads.d_grad_attn_W_K,
                    optim.d_m_attn_W_K, optim.d_v_attn_W_K,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_model);
+                   d_model * d_model, weight_decay);
         adam_update(block->attention->d_b_K, grads.d_grad_attn_b_K,
                    optim.d_m_attn_b_K, optim.d_v_attn_b_K,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1186,7 +1187,7 @@ float Transformer::train_step(
         adam_update(block->attention->d_W_V, grads.d_grad_attn_W_V,
                    optim.d_m_attn_W_V, optim.d_v_attn_W_V,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_model);
+                   d_model * d_model, weight_decay);
         adam_update(block->attention->d_b_V, grads.d_grad_attn_b_V,
                    optim.d_m_attn_b_V, optim.d_v_attn_b_V,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1195,7 +1196,7 @@ float Transformer::train_step(
         adam_update(block->attention->d_W_O, grads.d_grad_attn_W_O,
                    optim.d_m_attn_W_O, optim.d_v_attn_W_O,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_model);
+                   d_model * d_model, weight_decay);
         adam_update(block->attention->d_b_O, grads.d_grad_attn_b_O,
                    optim.d_m_attn_b_O, optim.d_v_attn_b_O,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1205,7 +1206,7 @@ float Transformer::train_step(
         adam_update(block->ffn->d_W1, grads.d_grad_ffn_W1,
                    optim.d_m_ffn_W1, optim.d_v_ffn_W1,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_ff * d_model);
+                   d_ff * d_model, weight_decay);
         adam_update(block->ffn->d_b1, grads.d_grad_ffn_b1,
                    optim.d_m_ffn_b1, optim.d_v_ffn_b1,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1214,7 +1215,7 @@ float Transformer::train_step(
         adam_update(block->ffn->d_W2, grads.d_grad_ffn_W2,
                    optim.d_m_ffn_W2, optim.d_v_ffn_W2,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_ff);
+                   d_model * d_ff, weight_decay);
         adam_update(block->ffn->d_b2, grads.d_grad_ffn_b2,
                    optim.d_m_ffn_b2, optim.d_v_ffn_b2,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1480,8 +1481,9 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
     // Backward pass
     backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
 
-    // Clip gradients to prevent explosion (max_norm = 1.0)
-    clip_gradients_by_norm(1.0f);
+    // Clip gradients to prevent explosion (max_norm = 5.0)
+    // Using 5.0 instead of 1.0 to avoid over-aggressive clipping
+    clip_gradients_by_norm(5.0f);
 
     // Compute diagnostics AFTER clipping
     TrainingDiagnostics diag;
@@ -1540,7 +1542,7 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
     adam_update(d_output_weights, d_grad_output_weights,
                d_m_output_weights, d_v_output_weights,
                learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-               d_model * vocab_size);
+               d_model * vocab_size, weight_decay);
 
     adam_update(d_output_bias, d_grad_output_bias,
                d_m_output_bias, d_v_output_bias,
@@ -1587,7 +1589,7 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
         adam_update(block->attention->d_W_Q, grads.d_grad_attn_W_Q,
                    optim.d_m_attn_W_Q, optim.d_v_attn_W_Q,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_model);
+                   d_model * d_model, weight_decay);
         adam_update(block->attention->d_b_Q, grads.d_grad_attn_b_Q,
                    optim.d_m_attn_b_Q, optim.d_v_attn_b_Q,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1596,7 +1598,7 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
         adam_update(block->attention->d_W_K, grads.d_grad_attn_W_K,
                    optim.d_m_attn_W_K, optim.d_v_attn_W_K,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_model);
+                   d_model * d_model, weight_decay);
         adam_update(block->attention->d_b_K, grads.d_grad_attn_b_K,
                    optim.d_m_attn_b_K, optim.d_v_attn_b_K,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1605,7 +1607,7 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
         adam_update(block->attention->d_W_V, grads.d_grad_attn_W_V,
                    optim.d_m_attn_W_V, optim.d_v_attn_W_V,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_model);
+                   d_model * d_model, weight_decay);
         adam_update(block->attention->d_b_V, grads.d_grad_attn_b_V,
                    optim.d_m_attn_b_V, optim.d_v_attn_b_V,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1614,7 +1616,7 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
         adam_update(block->attention->d_W_O, grads.d_grad_attn_W_O,
                    optim.d_m_attn_W_O, optim.d_v_attn_W_O,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_model);
+                   d_model * d_model, weight_decay);
         adam_update(block->attention->d_b_O, grads.d_grad_attn_b_O,
                    optim.d_m_attn_b_O, optim.d_v_attn_b_O,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1624,7 +1626,7 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
         adam_update(block->ffn->d_W1, grads.d_grad_ffn_W1,
                    optim.d_m_ffn_W1, optim.d_v_ffn_W1,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_ff * d_model);
+                   d_ff * d_model, weight_decay);
         adam_update(block->ffn->d_b1, grads.d_grad_ffn_b1,
                    optim.d_m_ffn_b1, optim.d_v_ffn_b1,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
@@ -1633,7 +1635,7 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
         adam_update(block->ffn->d_W2, grads.d_grad_ffn_W2,
                    optim.d_m_ffn_W2, optim.d_v_ffn_W2,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
-                   d_model * d_ff);
+                   d_model * d_ff, weight_decay);
         adam_update(block->ffn->d_b2, grads.d_grad_ffn_b2,
                    optim.d_m_ffn_b2, optim.d_v_ffn_b2,
                    learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,

@@ -14,8 +14,9 @@
 // epsilon: small constant for numerical stability
 // beta1_t: beta1^t (for bias correction)
 // beta2_t: beta2^t (for bias correction)
+// weight_decay: L2 regularization coefficient (default: 0.0)
 void adam_update(float* d_param, const float* d_grad, float* d_m, float* d_v,
                  float lr, float beta1, float beta2, float epsilon,
-                 float beta1_t, float beta2_t, int size);
+                 float beta1_t, float beta2_t, int size, float weight_decay = 0.0f);
 
 #endif // ADAM_H
