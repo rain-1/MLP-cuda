@@ -36,6 +36,19 @@ public:
         int seq_len
     );
 
+    // Backward pass
+    void backward_device(
+        const float* d_input,        // Input from forward pass [B, N, d_model]
+        const float* d_grad_output,  // Gradient w.r.t. output [B, N, d_model]
+        float* d_grad_input,         // Gradient w.r.t. input [B, N, d_model]
+        float* d_grad_W1,            // Gradient w.r.t. W1 [d_ff, d_model]
+        float* d_grad_b1,            // Gradient w.r.t. b1 [d_ff]
+        float* d_grad_W2,            // Gradient w.r.t. W2 [d_model, d_ff]
+        float* d_grad_b2,            // Gradient w.r.t. b2 [d_model]
+        int batch_size,
+        int seq_len
+    );
+
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);
 
@@ -46,11 +59,12 @@ private:
     int max_seq_len;
 
     // Parameters
-    float *d_W1, *d_b1;  // First layer: [d_model, d_ff]
-    float *d_W2, *d_b2;  // Second layer: [d_ff, d_model]
+    float *d_W1, *d_b1;  // First layer: [d_ff, d_model]
+    float *d_W2, *d_b2;  // Second layer: [d_model, d_ff]
 
     // Intermediate buffers
-    float *d_hidden;     // After first layer: [B, N, d_ff]
+    float *d_z1;         // Pre-GELU activations: [B, N, d_ff]
+    float *d_hidden;     // Post-GELU activations: [B, N, d_ff]
 
     void allocate_memory();
     void free_memory();

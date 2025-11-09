@@ -35,13 +35,14 @@ void FeedForwardNetwork::allocate_memory() {
     CUDA_CHECK(cudaMalloc(&d_b2, d_model * sizeof(float)));
 
     // Buffers
+    CUDA_CHECK(cudaMalloc(&d_z1, max_batch_size * max_seq_len * d_ff * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_hidden, max_batch_size * max_seq_len * d_ff * sizeof(float)));
 }
 
 void FeedForwardNetwork::free_memory() {
     cudaFree(d_W1); cudaFree(d_b1);
     cudaFree(d_W2); cudaFree(d_b2);
-    cudaFree(d_hidden);
+    cudaFree(d_z1); cudaFree(d_hidden);
 }
 
 void FeedForwardNetwork::initialize_parameters() {
@@ -69,14 +70,75 @@ void FeedForwardNetwork::forward_device(
 ) {
     int total_tokens = batch_size * seq_len;
 
-    // First layer: hidden = GELU(input · W1^T + b1)
-    matmul_transB(d_input, d_W1, d_hidden, total_tokens, d_model, d_ff);
-    add_bias(d_hidden, d_b1, d_hidden, total_tokens, d_ff);
-    gelu_forward(d_hidden, d_hidden, total_tokens * d_ff);
+    // First layer: z1 = input · W1^T + b1
+    matmul_transB(d_input, d_W1, d_z1, total_tokens, d_model, d_ff);
+    add_bias(d_z1, d_b1, d_z1, total_tokens, d_ff);
+
+    // GELU activation: hidden = GELU(z1)
+    gelu_forward(d_z1, d_hidden, total_tokens * d_ff);
 
     // Second layer: output = hidden · W2^T + b2
     matmul_transB(d_hidden, d_W2, d_output, total_tokens, d_ff, d_model);
     add_bias(d_output, d_b2, d_output, total_tokens, d_model);
+}
+
+void FeedForwardNetwork::backward_device(
+    const float* d_input,
+    const float* d_grad_output,
+    float* d_grad_input,
+    float* d_grad_W1,
+    float* d_grad_b1,
+    float* d_grad_W2,
+    float* d_grad_b2,
+    int batch_size,
+    int seq_len
+) {
+    int total_tokens = batch_size * seq_len;
+
+    // Allocate temporary buffers for intermediate gradients
+    float* d_grad_hidden;
+    float* d_grad_z1;
+    CUDA_CHECK(cudaMalloc(&d_grad_hidden, total_tokens * d_ff * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_z1, total_tokens * d_ff * sizeof(float)));
+
+    // Backward through second layer bias: grad_b2 = sum_rows(grad_output)
+    sum_rows(d_grad_output, d_grad_b2, total_tokens, d_model);
+
+    // Backward through second layer matmul: hidden · W2^T
+    // Forward was: output = hidden [total_tokens x d_ff] * W2^T [d_ff x d_model]
+    matmul_transB_backward(
+        d_grad_output,   // grad_C [total_tokens x d_model]
+        d_hidden,        // A [total_tokens x d_ff]
+        d_W2,            // B [d_model x d_ff]
+        d_grad_hidden,   // grad_A [total_tokens x d_ff]
+        d_grad_W2,       // grad_B [d_model x d_ff]
+        total_tokens,    // M
+        d_ff,            // K
+        d_model          // N
+    );
+
+    // Backward through GELU activation
+    gelu_backward(d_grad_hidden, d_z1, d_grad_z1, total_tokens * d_ff);
+
+    // Backward through first layer bias: grad_b1 = sum_rows(grad_z1)
+    sum_rows(d_grad_z1, d_grad_b1, total_tokens, d_ff);
+
+    // Backward through first layer matmul: input · W1^T
+    // Forward was: z1 = input [total_tokens x d_model] * W1^T [d_model x d_ff]
+    matmul_transB_backward(
+        d_grad_z1,       // grad_C [total_tokens x d_ff]
+        d_input,         // A [total_tokens x d_model]
+        d_W1,            // B [d_ff x d_model]
+        d_grad_input,    // grad_A [total_tokens x d_model]
+        d_grad_W1,       // grad_B [d_ff x d_model]
+        total_tokens,    // M
+        d_model,         // K
+        d_ff             // N
+    );
+
+    // Free temporary buffers
+    CUDA_CHECK(cudaFree(d_grad_hidden));
+    CUDA_CHECK(cudaFree(d_grad_z1));
 }
 
 void FeedForwardNetwork::save_parameters(const char* filename) {
