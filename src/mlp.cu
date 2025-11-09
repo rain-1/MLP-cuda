@@ -211,21 +211,21 @@ void MLP::update_parameters() {
 
     // Update layer 1 parameters
     adam_update(d_W1, d_dW1, d_m_W1, d_v_W1, lr, beta1, beta2, epsilon,
-                beta1_t, beta2_t, h2 * h1);
+                beta1_t, beta2_t, 0.0f, h2 * h1);
     adam_update(d_b1, d_db1, d_m_b1, d_v_b1, lr, beta1, beta2, epsilon,
-                beta1_t, beta2_t, h2);
+                beta1_t, beta2_t, 0.0f, h2);
 
     // Update layer 2 parameters
     adam_update(d_W2, d_dW2, d_m_W2, d_v_W2, lr, beta1, beta2, epsilon,
-                beta1_t, beta2_t, h3 * h2);
+                beta1_t, beta2_t, 0.0f, h3 * h2);
     adam_update(d_b2, d_db2, d_m_b2, d_v_b2, lr, beta1, beta2, epsilon,
-                beta1_t, beta2_t, h3);
+                beta1_t, beta2_t, 0.0f, h3);
 
     // Update layer 3 parameters
     adam_update(d_W3, d_dW3, d_m_W3, d_v_W3, lr, beta1, beta2, epsilon,
-                beta1_t, beta2_t, h4 * h3);
+                beta1_t, beta2_t, 0.0f, h4 * h3);
     adam_update(d_b3, d_db3, d_m_b3, d_v_b3, lr, beta1, beta2, epsilon,
-                beta1_t, beta2_t, h4);
+                beta1_t, beta2_t, 0.0f, h4);
 }
 
 void MLP::forward(const float* h_X, float* h_output, int num_samples) {
