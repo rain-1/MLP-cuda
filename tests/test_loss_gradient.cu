@@ -13,7 +13,7 @@ bool check_lm_loss_gradient() {
     int batch_size = 2;
     int seq_len = 3;
     int vocab_size = 10;
-    float epsilon = 1e-4f;
+    float epsilon = 1e-5f;  // Smaller epsilon for better numerical precision
     float tolerance_strict = 1e-3f;  // 0.1% - strict tolerance
     float tolerance_relaxed = 1e-2f;  // 1% - relaxed tolerance for finite differences
 
