@@ -25,20 +25,25 @@ public:
     void initialize_parameters();
 
     // Forward pass (inference)
-    // h_X: host input batch [B x h1]
-    // h_output: host output buffer [B x h4]
-    // batch_size: actual batch size (must be <= max batch_size from constructor)
-    void forward(const float* h_X, float* h_output, int batch_size);
+    // h_X: host input batch [N x h1]
+    // h_output: host output buffer [N x h4]
+    // num_samples: number of samples (can be > max_batch_size, will process in batches)
+    void forward(const float* h_X, float* h_output, int num_samples);
 
     // Training step (forward + backward + update)
     // h_X: host input batch [B x h1]
     // h_Y: host target batch [B x h4]
-    // batch_size: actual batch size
+    // batch_size: actual batch size (must be <= max_batch_size)
     // Returns: loss value
     float train_step(const float* h_X, const float* h_Y, int batch_size);
 
-    // Get loss on a batch (forward + loss computation)
-    float evaluate(const float* h_X, const float* h_Y, int batch_size);
+    // Get loss on a dataset (forward + loss computation)
+    // Automatically processes in batches if num_samples > max_batch_size
+    // h_X: host input data [N x h1]
+    // h_Y: host target data [N x h4]
+    // num_samples: number of samples (can be > max_batch_size)
+    // Returns: average loss across all samples
+    float evaluate(const float* h_X, const float* h_Y, int num_samples);
 
     // Save/load parameters
     void save_parameters(const char* filename);

@@ -228,20 +228,45 @@ void MLP::update_parameters() {
                 beta1_t, beta2_t, h4);
 }
 
-void MLP::forward(const float* h_X, float* h_output, int batch_size) {
+void MLP::forward(const float* h_X, float* h_output, int num_samples) {
+    // Process in batches if num_samples > max_batch_size
+    if (num_samples > max_batch_size) {
+        int num_batches = (num_samples + max_batch_size - 1) / max_batch_size;
+
+        for (int i = 0; i < num_batches; i++) {
+            int start_idx = i * max_batch_size;
+            int current_batch_size = (start_idx + max_batch_size <= num_samples) ?
+                                      max_batch_size : (num_samples - start_idx);
+
+            forward(h_X + start_idx * h1,
+                   h_output + start_idx * h4,
+                   current_batch_size);
+        }
+        return;
+    }
+
+    // Single batch - fits in allocated buffers
     // Copy input to device
-    CUDA_CHECK(cudaMemcpy(d_X, h_X, batch_size * h1 * sizeof(float),
+    CUDA_CHECK(cudaMemcpy(d_X, h_X, num_samples * h1 * sizeof(float),
                          cudaMemcpyHostToDevice));
 
     // Forward pass
-    forward_device(batch_size);
+    forward_device(num_samples);
 
     // Copy output to host
-    CUDA_CHECK(cudaMemcpy(h_output, d_Z3, batch_size * h4 * sizeof(float),
+    CUDA_CHECK(cudaMemcpy(h_output, d_Z3, num_samples * h4 * sizeof(float),
                          cudaMemcpyDeviceToHost));
 }
 
 float MLP::train_step(const float* h_X, const float* h_Y, int batch_size) {
+    // Check batch size
+    if (batch_size > max_batch_size) {
+        fprintf(stderr, "Error: batch_size (%d) exceeds max_batch_size (%d) in train_step\n",
+                batch_size, max_batch_size);
+        fprintf(stderr, "       Process your training data in smaller batches.\n");
+        return -1.0f;
+    }
+
     // Copy data to device
     CUDA_CHECK(cudaMemcpy(d_X, h_X, batch_size * h1 * sizeof(float),
                          cudaMemcpyHostToDevice));
@@ -263,18 +288,40 @@ float MLP::train_step(const float* h_X, const float* h_Y, int batch_size) {
     return loss;
 }
 
-float MLP::evaluate(const float* h_X, const float* h_Y, int batch_size) {
+float MLP::evaluate(const float* h_X, const float* h_Y, int num_samples) {
+    // Process in batches if num_samples > max_batch_size
+    if (num_samples > max_batch_size) {
+        float total_loss = 0.0f;
+        int num_batches = (num_samples + max_batch_size - 1) / max_batch_size;
+
+        for (int i = 0; i < num_batches; i++) {
+            int start_idx = i * max_batch_size;
+            int current_batch_size = (start_idx + max_batch_size <= num_samples) ?
+                                      max_batch_size : (num_samples - start_idx);
+
+            float batch_loss = evaluate(h_X + start_idx * h1,
+                                       h_Y + start_idx * h4,
+                                       current_batch_size);
+
+            // Weighted average (last batch might be smaller)
+            total_loss += batch_loss * current_batch_size;
+        }
+
+        return total_loss / num_samples;
+    }
+
+    // Single batch - fits in allocated buffers
     // Copy data to device
-    CUDA_CHECK(cudaMemcpy(d_X, h_X, batch_size * h1 * sizeof(float),
+    CUDA_CHECK(cudaMemcpy(d_X, h_X, num_samples * h1 * sizeof(float),
                          cudaMemcpyHostToDevice));
-    CUDA_CHECK(cudaMemcpy(d_Y, h_Y, batch_size * h4 * sizeof(float),
+    CUDA_CHECK(cudaMemcpy(d_Y, h_Y, num_samples * h4 * sizeof(float),
                          cudaMemcpyHostToDevice));
 
     // Forward pass
-    forward_device(batch_size);
+    forward_device(num_samples);
 
     // Compute loss
-    return mse_loss(d_Z3, d_Y, batch_size * h4, batch_size);
+    return mse_loss(d_Z3, d_Y, num_samples * h4, num_samples);
 }
 
 void MLP::save_parameters(const char* filename) {
