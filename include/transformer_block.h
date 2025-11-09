@@ -4,6 +4,14 @@
 #include "multi_head_attention.h"
 #include <cuda_runtime.h>
 
+// Helper function for residual connections
+void add_residual(
+    const float* d_input,
+    const float* d_residual,
+    float* d_output,
+    int size
+);
+
 // Feed-Forward Network
 // Two-layer MLP with GELU activation
 // FFN(x) = GELU(x·W1 + b1)·W2 + b2

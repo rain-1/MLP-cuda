@@ -25,6 +25,7 @@ add_library(mlp_cuda STATIC
     src/multi_head_attention.cu
     src/transformer_layers.cu
     src/transformer_block.cu
+    src/transformer.cu
     src/tokenizer.cpp
 )
 
@@ -54,6 +55,9 @@ target_link_libraries(train_regression mlp_cuda)
 
 add_executable(attention_demo examples/attention_demo.cu)
 target_link_libraries(attention_demo mlp_cuda)
+
+add_executable(transformer_demo examples/transformer_demo.cu)
+target_link_libraries(transformer_demo mlp_cuda)
 
 # Installation
 install(TARGETS mlp_cuda DESTINATION lib)

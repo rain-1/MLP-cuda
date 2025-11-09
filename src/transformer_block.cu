@@ -205,31 +205,74 @@ void TransformerBlock::forward_device(
     int batch_size,
     int seq_len
 ) {
-    // 1. Multi-head self-attention with residual connection
-    // Note: MultiHeadAttention handles the forward pass internally
-    // We need to adapt it to work with device pointers directly
+    // 1. Layer norm before attention
+    layer_norm(d_input, d_attn_normed, d_ln1_gamma, d_ln1_beta,
+               batch_size, seq_len, d_model);
 
-    // For now, use a simplified approach:
-    // attn_output = Attention(input)
-    // Copy input to temporary buffer for attention
-    CUDA_CHECK(cudaMemcpy(d_attn_output, d_input,
+    // 2. Multi-head self-attention
+    // Copy normalized input to attention buffers
+    CUDA_CHECK(cudaMemcpy(attention->d_X, d_attn_normed,
+                         batch_size * seq_len * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(attention->d_KV, d_attn_normed,
                          batch_size * seq_len * d_model * sizeof(float),
                          cudaMemcpyDeviceToDevice));
 
-    // TODO: Call attention forward pass with mask
-    // attention->forward_device(...)
+    // Optionally copy mask if provided
+    if (d_mask != nullptr && attention->d_mask != nullptr) {
+        CUDA_CHECK(cudaMemcpy(attention->d_mask, d_mask,
+                             seq_len * seq_len * sizeof(float),
+                             cudaMemcpyDeviceToDevice));
+    }
 
-    // 2. Add residual and layer norm: normed = LayerNorm(input + attn_output)
-    // For now, simplified: normed = LayerNorm(attn_output)
-    layer_norm(d_attn_output, d_attn_normed, d_ln1_gamma, d_ln1_beta,
+    // Forward pass (result written to attention->d_X)
+    attention->forward_device(batch_size, seq_len, seq_len);
+
+    // Copy attention output
+    CUDA_CHECK(cudaMemcpy(d_attn_output, attention->d_X,
+                         batch_size * seq_len * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+
+    // 3. Add residual connection: attn_output = input + attn_output
+    int total_size = batch_size * seq_len * d_model;
+    add_residual(d_input, d_attn_output, d_attn_output, total_size);
+
+    // 4. Layer norm before FFN
+    layer_norm(d_attn_output, d_ffn_normed, d_ln2_gamma, d_ln2_beta,
                batch_size, seq_len, d_model);
 
-    // 3. Feed-forward network
-    ffn->forward_device(d_attn_normed, d_ffn_output, batch_size, seq_len);
+    // 5. Feed-forward network
+    ffn->forward_device(d_ffn_normed, d_ffn_output, batch_size, seq_len);
 
-    // 4. Add residual and layer norm: output = LayerNorm(normed + ffn_output)
-    layer_norm(d_ffn_output, d_output, d_ln2_gamma, d_ln2_beta,
-               batch_size, seq_len, d_model);
+    // 6. Add residual connection: output = attn_output + ffn_output
+    add_residual(d_attn_output, d_ffn_output, d_output, total_size);
+}
+
+// Residual connection helper kernel
+__global__ void add_residual_kernel(
+    const float* input,
+    const float* residual,
+    float* output,
+    int size
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        output[idx] = input[idx] + residual[idx];
+    }
+}
+
+void add_residual(
+    const float* d_input,
+    const float* d_residual,
+    float* d_output,
+    int size
+) {
+    int block_size = 256;
+    int grid_size = (size + block_size - 1) / block_size;
+    add_residual_kernel<<<grid_size, block_size>>>(
+        d_input, d_residual, d_output, size
+    );
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void TransformerBlock::save_parameters(const char* filename) {
