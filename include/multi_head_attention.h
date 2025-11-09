@@ -4,6 +4,8 @@
 #include <cuda_runtime.h>
 
 class MultiHeadAttention {
+    friend class Transformer;  // Allow Transformer to access private members for training
+
 public:
     // Constructor
     // d_model: Model dimension (e.g., 512)

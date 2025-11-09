@@ -16,6 +16,8 @@ void add_residual(
 // Two-layer MLP with GELU activation
 // FFN(x) = GELU(x·W1 + b1)·W2 + b2
 class FeedForwardNetwork {
+    friend class Transformer;  // Allow Transformer to access private members for training
+
 public:
     FeedForwardNetwork(
         int d_model,
@@ -74,6 +76,8 @@ private:
 // Combines multi-head self-attention and feed-forward network
 // with residual connections and layer normalization
 class TransformerBlock {
+    friend class Transformer;  // Allow Transformer to access private members for training
+
 public:
     TransformerBlock(
         int d_model,

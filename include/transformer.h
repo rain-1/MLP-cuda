@@ -139,10 +139,60 @@ private:
     float* d_grad_ln_final_gamma;     // [d_model]
     float* d_grad_ln_final_beta;      // [d_model]
 
+    // Gradient buffers for TransformerBlocks (per-layer)
+    struct BlockGradients {
+        float *d_grad_ln1_gamma, *d_grad_ln1_beta;
+        float *d_grad_ln2_gamma, *d_grad_ln2_beta;
+        float *d_grad_attn_W_Q, *d_grad_attn_b_Q;
+        float *d_grad_attn_W_K, *d_grad_attn_b_K;
+        float *d_grad_attn_W_V, *d_grad_attn_b_V;
+        float *d_grad_attn_W_O, *d_grad_attn_b_O;
+        float *d_grad_ffn_W1, *d_grad_ffn_b1;
+        float *d_grad_ffn_W2, *d_grad_ffn_b2;
+    };
+    std::vector<BlockGradients> block_grads;
+
+    // Adam optimizer state
+    int training_step;
+    float beta1 = 0.9f;
+    float beta2 = 0.999f;
+    float epsilon = 1e-8f;
+
+    // Adam momentum buffers for embeddings and output
+    float *d_m_token_embeddings, *d_v_token_embeddings;
+    float *d_m_position_embeddings, *d_v_position_embeddings;
+    float *d_m_output_weights, *d_v_output_weights;
+    float *d_m_output_bias, *d_v_output_bias;
+    float *d_m_ln_final_gamma, *d_v_ln_final_gamma;
+    float *d_m_ln_final_beta, *d_v_ln_final_beta;
+
+    // Adam momentum buffers for blocks (per-layer)
+    struct BlockOptimState {
+        float *d_m_ln1_gamma, *d_v_ln1_gamma;
+        float *d_m_ln1_beta, *d_v_ln1_beta;
+        float *d_m_ln2_gamma, *d_v_ln2_gamma;
+        float *d_m_ln2_beta, *d_v_ln2_beta;
+        float *d_m_attn_W_Q, *d_v_attn_W_Q;
+        float *d_m_attn_b_Q, *d_v_attn_b_Q;
+        float *d_m_attn_W_K, *d_v_attn_W_K;
+        float *d_m_attn_b_K, *d_v_attn_b_K;
+        float *d_m_attn_W_V, *d_v_attn_W_V;
+        float *d_m_attn_b_V, *d_v_attn_b_V;
+        float *d_m_attn_W_O, *d_v_attn_W_O;
+        float *d_m_attn_b_O, *d_v_attn_b_O;
+        float *d_m_ffn_W1, *d_v_ffn_W1;
+        float *d_m_ffn_b1, *d_v_ffn_b1;
+        float *d_m_ffn_W2, *d_v_ffn_W2;
+        float *d_m_ffn_b2, *d_v_ffn_b2;
+    };
+    std::vector<BlockOptimState> block_optim_state;
+
     void allocate_memory();
     void free_memory();
     void allocate_gradient_buffers();
     void free_gradient_buffers();
+    void allocate_optimizer_state();
+    void free_optimizer_state();
 
     // Helper for generating next token
     int sample_token(

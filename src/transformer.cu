@@ -3,6 +3,7 @@
 #include "transformer_layers.h"
 #include "matrix_ops.h"
 #include "loss.h"
+#include "adam.h"
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <curand_kernel.h>
@@ -14,6 +15,24 @@
 // ============================================================================
 // CUDA Kernels
 // ============================================================================
+
+// Accumulate gradients for position embeddings across batch
+__global__ void accumulate_position_gradients_kernel(
+    const float* d_grad_input,      // [B, N, d_model]
+    float* d_grad_pos_embeddings,   // [N, d_model]
+    int B, int N, int d_model
+) {
+    int pos = blockIdx.x;
+    int dim = threadIdx.x + blockIdx.y * blockDim.x;
+
+    if (pos < N && dim < d_model) {
+        float grad_sum = 0.0f;
+        for (int b = 0; b < B; b++) {
+            grad_sum += d_grad_input[b * N * d_model + pos * d_model + dim];
+        }
+        atomicAdd(&d_grad_pos_embeddings[pos * d_model + dim], grad_sum);
+    }
+}
 
 // Add position embeddings to token embeddings
 __global__ void add_position_embeddings_kernel(
@@ -102,7 +121,7 @@ Transformer::Transformer(
     int max_batch_size
 ) : vocab_size(vocab_size), d_model(d_model), num_layers(num_layers),
     num_heads(num_heads), d_ff(d_ff), max_seq_len(max_seq_len),
-    max_batch_size(max_batch_size)
+    max_batch_size(max_batch_size), training_step(0)
 {
     allocate_memory();
 
@@ -114,12 +133,35 @@ Transformer::Transformer(
     }
 
     initialize_parameters();
+
+    // Initialize gradient and optimizer state pointers to nullptr
+    d_grad_token_embeddings = nullptr;
+    d_grad_position_embeddings = nullptr;
+    d_grad_output_weights = nullptr;
+    d_grad_output_bias = nullptr;
+    d_grad_ln_final_gamma = nullptr;
+    d_grad_ln_final_beta = nullptr;
+
+    d_m_token_embeddings = nullptr;
+    d_v_token_embeddings = nullptr;
+    d_m_position_embeddings = nullptr;
+    d_v_position_embeddings = nullptr;
+    d_m_output_weights = nullptr;
+    d_v_output_weights = nullptr;
+    d_m_output_bias = nullptr;
+    d_v_output_bias = nullptr;
+    d_m_ln_final_gamma = nullptr;
+    d_v_ln_final_gamma = nullptr;
+    d_m_ln_final_beta = nullptr;
+    d_v_ln_final_beta = nullptr;
 }
 
 Transformer::~Transformer() {
     for (auto block : blocks) {
         delete block;
     }
+    free_gradient_buffers();
+    free_optimizer_state();
     free_memory();
 }
 
@@ -551,15 +593,7 @@ void Transformer::load_parameters(const char* filename) {
 // ============================================================================
 
 void Transformer::allocate_gradient_buffers() {
-    // Initialize gradient buffers to nullptr first
-    d_grad_token_embeddings = nullptr;
-    d_grad_position_embeddings = nullptr;
-    d_grad_output_weights = nullptr;
-    d_grad_output_bias = nullptr;
-    d_grad_ln_final_gamma = nullptr;
-    d_grad_ln_final_beta = nullptr;
-
-    // Allocate gradient buffers
+    // Allocate gradient buffers for embeddings and output projection
     CUDA_CHECK(cudaMalloc(&d_grad_token_embeddings, vocab_size * d_model * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_grad_position_embeddings, max_seq_len * d_model * sizeof(float)));
     CUDA_CHECK(cudaMalloc(&d_grad_output_weights, d_model * vocab_size * sizeof(float)));
@@ -574,6 +608,36 @@ void Transformer::allocate_gradient_buffers() {
     CUDA_CHECK(cudaMemset(d_grad_output_bias, 0, vocab_size * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_grad_ln_final_gamma, 0, d_model * sizeof(float)));
     CUDA_CHECK(cudaMemset(d_grad_ln_final_beta, 0, d_model * sizeof(float)));
+
+    // Allocate gradient buffers for each TransformerBlock
+    block_grads.clear();
+    for (int i = 0; i < num_layers; i++) {
+        BlockGradients grads;
+
+        // Layer norm gradients
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_ln1_gamma, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_ln1_beta, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_ln2_gamma, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_ln2_beta, d_model * sizeof(float)));
+
+        // Attention gradients
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_attn_W_Q, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_attn_b_Q, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_attn_W_K, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_attn_b_K, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_attn_W_V, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_attn_b_V, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_attn_W_O, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_attn_b_O, d_model * sizeof(float)));
+
+        // FFN gradients
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_ffn_W1, d_ff * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_ffn_b1, d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_ffn_W2, d_model * d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&grads.d_grad_ffn_b2, d_model * sizeof(float)));
+
+        block_grads.push_back(grads);
+    }
 }
 
 void Transformer::free_gradient_buffers() {
@@ -590,6 +654,202 @@ void Transformer::free_gradient_buffers() {
     d_grad_output_bias = nullptr;
     d_grad_ln_final_gamma = nullptr;
     d_grad_ln_final_beta = nullptr;
+
+    // Free block gradient buffers
+    for (auto& grads : block_grads) {
+        cudaFree(grads.d_grad_ln1_gamma);
+        cudaFree(grads.d_grad_ln1_beta);
+        cudaFree(grads.d_grad_ln2_gamma);
+        cudaFree(grads.d_grad_ln2_beta);
+        cudaFree(grads.d_grad_attn_W_Q);
+        cudaFree(grads.d_grad_attn_b_Q);
+        cudaFree(grads.d_grad_attn_W_K);
+        cudaFree(grads.d_grad_attn_b_K);
+        cudaFree(grads.d_grad_attn_W_V);
+        cudaFree(grads.d_grad_attn_b_V);
+        cudaFree(grads.d_grad_attn_W_O);
+        cudaFree(grads.d_grad_attn_b_O);
+        cudaFree(grads.d_grad_ffn_W1);
+        cudaFree(grads.d_grad_ffn_b1);
+        cudaFree(grads.d_grad_ffn_W2);
+        cudaFree(grads.d_grad_ffn_b2);
+    }
+    block_grads.clear();
+}
+
+void Transformer::allocate_optimizer_state() {
+    // Allocate Adam state for embeddings and output projection
+    CUDA_CHECK(cudaMalloc(&d_m_token_embeddings, vocab_size * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_v_token_embeddings, vocab_size * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_m_position_embeddings, max_seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_v_position_embeddings, max_seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_m_output_weights, d_model * vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_v_output_weights, d_model * vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_m_output_bias, vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_v_output_bias, vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_m_ln_final_gamma, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_v_ln_final_gamma, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_m_ln_final_beta, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_v_ln_final_beta, d_model * sizeof(float)));
+
+    // Zero out Adam state
+    CUDA_CHECK(cudaMemset(d_m_token_embeddings, 0, vocab_size * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_v_token_embeddings, 0, vocab_size * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_m_position_embeddings, 0, max_seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_v_position_embeddings, 0, max_seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_m_output_weights, 0, d_model * vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_v_output_weights, 0, d_model * vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_m_output_bias, 0, vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_v_output_bias, 0, vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_m_ln_final_gamma, 0, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_v_ln_final_gamma, 0, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_m_ln_final_beta, 0, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_v_ln_final_beta, 0, d_model * sizeof(float)));
+
+    // Allocate Adam state for each TransformerBlock
+    block_optim_state.clear();
+    for (int i = 0; i < num_layers; i++) {
+        BlockOptimState state;
+
+        // Layer norm
+        CUDA_CHECK(cudaMalloc(&state.d_m_ln1_gamma, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_ln1_gamma, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_ln1_beta, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_ln1_beta, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_ln2_gamma, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_ln2_gamma, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_ln2_beta, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_ln2_beta, d_model * sizeof(float)));
+
+        // Attention
+        CUDA_CHECK(cudaMalloc(&state.d_m_attn_W_Q, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_attn_W_Q, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_attn_b_Q, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_attn_b_Q, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_attn_W_K, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_attn_W_K, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_attn_b_K, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_attn_b_K, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_attn_W_V, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_attn_W_V, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_attn_b_V, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_attn_b_V, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_attn_W_O, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_attn_W_O, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_attn_b_O, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_attn_b_O, d_model * sizeof(float)));
+
+        // FFN
+        CUDA_CHECK(cudaMalloc(&state.d_m_ffn_W1, d_ff * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_ffn_W1, d_ff * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_ffn_b1, d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_ffn_b1, d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_ffn_W2, d_model * d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_ffn_W2, d_model * d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_m_ffn_b2, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMalloc(&state.d_v_ffn_b2, d_model * sizeof(float)));
+
+        // Zero initialize
+        CUDA_CHECK(cudaMemset(state.d_m_ln1_gamma, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_ln1_gamma, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_ln1_beta, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_ln1_beta, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_ln2_gamma, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_ln2_gamma, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_ln2_beta, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_ln2_beta, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_attn_W_Q, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_attn_W_Q, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_attn_b_Q, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_attn_b_Q, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_attn_W_K, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_attn_W_K, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_attn_b_K, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_attn_b_K, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_attn_W_V, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_attn_W_V, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_attn_b_V, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_attn_b_V, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_attn_W_O, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_attn_W_O, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_attn_b_O, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_attn_b_O, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_ffn_W1, 0, d_ff * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_ffn_W1, 0, d_ff * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_ffn_b1, 0, d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_ffn_b1, 0, d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_ffn_W2, 0, d_model * d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_ffn_W2, 0, d_model * d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_m_ffn_b2, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(state.d_v_ffn_b2, 0, d_model * sizeof(float)));
+
+        block_optim_state.push_back(state);
+    }
+}
+
+void Transformer::free_optimizer_state() {
+    if (d_m_token_embeddings) cudaFree(d_m_token_embeddings);
+    if (d_v_token_embeddings) cudaFree(d_v_token_embeddings);
+    if (d_m_position_embeddings) cudaFree(d_m_position_embeddings);
+    if (d_v_position_embeddings) cudaFree(d_v_position_embeddings);
+    if (d_m_output_weights) cudaFree(d_m_output_weights);
+    if (d_v_output_weights) cudaFree(d_v_output_weights);
+    if (d_m_output_bias) cudaFree(d_m_output_bias);
+    if (d_v_output_bias) cudaFree(d_v_output_bias);
+    if (d_m_ln_final_gamma) cudaFree(d_m_ln_final_gamma);
+    if (d_v_ln_final_gamma) cudaFree(d_v_ln_final_gamma);
+    if (d_m_ln_final_beta) cudaFree(d_m_ln_final_beta);
+    if (d_v_ln_final_beta) cudaFree(d_v_ln_final_beta);
+
+    d_m_token_embeddings = nullptr;
+    d_v_token_embeddings = nullptr;
+    d_m_position_embeddings = nullptr;
+    d_v_position_embeddings = nullptr;
+    d_m_output_weights = nullptr;
+    d_v_output_weights = nullptr;
+    d_m_output_bias = nullptr;
+    d_v_output_bias = nullptr;
+    d_m_ln_final_gamma = nullptr;
+    d_v_ln_final_gamma = nullptr;
+    d_m_ln_final_beta = nullptr;
+    d_v_ln_final_beta = nullptr;
+
+    // Free block optimizer state
+    for (auto& state : block_optim_state) {
+        cudaFree(state.d_m_ln1_gamma);
+        cudaFree(state.d_v_ln1_gamma);
+        cudaFree(state.d_m_ln1_beta);
+        cudaFree(state.d_v_ln1_beta);
+        cudaFree(state.d_m_ln2_gamma);
+        cudaFree(state.d_v_ln2_gamma);
+        cudaFree(state.d_m_ln2_beta);
+        cudaFree(state.d_v_ln2_beta);
+        cudaFree(state.d_m_attn_W_Q);
+        cudaFree(state.d_v_attn_W_Q);
+        cudaFree(state.d_m_attn_b_Q);
+        cudaFree(state.d_v_attn_b_Q);
+        cudaFree(state.d_m_attn_W_K);
+        cudaFree(state.d_v_attn_W_K);
+        cudaFree(state.d_m_attn_b_K);
+        cudaFree(state.d_v_attn_b_K);
+        cudaFree(state.d_m_attn_W_V);
+        cudaFree(state.d_v_attn_W_V);
+        cudaFree(state.d_m_attn_b_V);
+        cudaFree(state.d_v_attn_b_V);
+        cudaFree(state.d_m_attn_W_O);
+        cudaFree(state.d_v_attn_W_O);
+        cudaFree(state.d_m_attn_b_O);
+        cudaFree(state.d_v_attn_b_O);
+        cudaFree(state.d_m_ffn_W1);
+        cudaFree(state.d_v_ffn_W1);
+        cudaFree(state.d_m_ffn_b1);
+        cudaFree(state.d_v_ffn_b1);
+        cudaFree(state.d_m_ffn_W2);
+        cudaFree(state.d_v_ffn_W2);
+        cudaFree(state.d_m_ffn_b2);
+        cudaFree(state.d_v_ffn_b2);
+    }
+    block_optim_state.clear();
 }
 
 void Transformer::backward(
@@ -673,27 +933,126 @@ void Transformer::backward(
     // 4. Backward through transformer blocks (in reverse order)
     // ========================================================================
 
-    // NOTE: This is simplified! In reality, we need to allocate gradient buffers
-    // for all block parameters. For now, this is a skeleton implementation.
+    // We need to reconstruct which buffer contains the output of each layer
+    // In forward: d_embeddings -> block0 -> buffer1 -> block1 -> buffer2 -> ...
+    // The buffers alternate between d_embeddings and d_block_output
 
-    // TODO: Implement full block backward pass with gradient accumulation
-    // For each block in reverse:
-    //   - Allocate gradient buffers for block parameters
-    //   - Call block->backward_device()
-    //   - Update parameters using optimizer
+    // Allocate buffers for intermediate gradients during block backward
+    float *d_grad_block_input, *d_grad_block_input_temp;
+    CUDA_CHECK(cudaMalloc(&d_grad_block_input, total_tokens * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_block_input_temp, total_tokens * d_model * sizeof(float)));
 
-    printf("WARNING: TransformerBlock backward not yet integrated into Transformer::backward()\n");
+    // Start with gradient w.r.t. the output of the last block
+    // After final layer norm backward, d_grad_block_out contains this gradient
+    CUDA_CHECK(cudaMemcpy(d_grad_block_input, d_grad_block_out,
+                         total_tokens * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+
+    // Zero out block gradient buffers
+    for (int i = 0; i < num_layers; i++) {
+        auto& grads = block_grads[i];
+        CUDA_CHECK(cudaMemset(grads.d_grad_ln1_gamma, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_ln1_beta, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_ln2_gamma, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_ln2_beta, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_attn_W_Q, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_attn_b_Q, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_attn_W_K, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_attn_b_K, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_attn_W_V, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_attn_b_V, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_attn_W_O, 0, d_model * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_attn_b_O, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_ffn_W1, 0, d_ff * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_ffn_b1, 0, d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_ffn_W2, 0, d_model * d_ff * sizeof(float)));
+        CUDA_CHECK(cudaMemset(grads.d_grad_ffn_b2, 0, d_model * sizeof(float)));
+    }
+
+    // Backward through each block in reverse order
+    // We need to track the input to each block from the forward pass
+    // For simplicity, we'll re-run a minimal forward to get the inputs
+    // (In production, these would be cached during forward)
+
+    // Allocate buffer to store block inputs from forward pass
+    std::vector<float*> block_inputs(num_layers + 1);
+    block_inputs[0] = d_embeddings;  // Input to first block is embeddings
+
+    // Allocate buffers for intermediate block outputs
+    for (int i = 1; i <= num_layers; i++) {
+        CUDA_CHECK(cudaMalloc(&block_inputs[i], total_tokens * d_model * sizeof(float)));
+    }
+
+    // Re-run forward to cache block inputs (TODO: optimize by caching during forward)
+    float* fwd_input = d_embeddings;
+    float* fwd_output = block_inputs[1];
+    for (int i = 0; i < num_layers; i++) {
+        blocks[i]->forward_device(fwd_input, fwd_output,
+                                  d_causal_mask, batch_size, seq_len);
+        if (i + 1 < num_layers) {
+            fwd_input = fwd_output;
+            fwd_output = block_inputs[i + 2];
+        }
+    }
+
+    // Now run backward through blocks in reverse
+    for (int i = num_layers - 1; i >= 0; i--) {
+        auto& grads = block_grads[i];
+
+        // Call block backward
+        blocks[i]->backward_device(
+            block_inputs[i],          // Input to this block from forward pass
+            d_grad_block_input,       // Gradient w.r.t. block output
+            d_grad_block_input_temp,  // Gradient w.r.t. block input (output)
+            grads.d_grad_ln1_gamma, grads.d_grad_ln1_beta,
+            grads.d_grad_ln2_gamma, grads.d_grad_ln2_beta,
+            grads.d_grad_attn_W_Q, grads.d_grad_attn_b_Q,
+            grads.d_grad_attn_W_K, grads.d_grad_attn_b_K,
+            grads.d_grad_attn_W_V, grads.d_grad_attn_b_V,
+            grads.d_grad_attn_W_O, grads.d_grad_attn_b_O,
+            grads.d_grad_ffn_W1, grads.d_grad_ffn_b1,
+            grads.d_grad_ffn_W2, grads.d_grad_ffn_b2,
+            batch_size, seq_len
+        );
+
+        // Swap gradient buffers for next iteration
+        float* temp = d_grad_block_input;
+        d_grad_block_input = d_grad_block_input_temp;
+        d_grad_block_input_temp = temp;
+    }
+
+    // After all blocks, d_grad_block_input contains gradient w.r.t. embeddings
+    CUDA_CHECK(cudaMemcpy(d_grad_embeddings, d_grad_block_input,
+                         total_tokens * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
 
     // ========================================================================
     // 5. Backward through embeddings
     // ========================================================================
 
-    // For now, gradient flows to d_grad_embeddings (placeholder)
-    // TODO: Implement embedding backward pass
-    // - Split d_grad_embeddings into token and position gradients
-    // - Accumulate to d_grad_token_embeddings and d_grad_position_embeddings
+    // Backward through token embedding lookup
+    // d_grad_embeddings contains gradient w.r.t. (token_emb + pos_emb)
+    // This gradient flows to both token and position embeddings
+    embedding_backward(d_grad_embeddings, d_token_ids, d_grad_token_embeddings,
+                      batch_size, seq_len, vocab_size, d_model);
 
-    // Cleanup
+    // Accumulate position embedding gradients
+    // Position embeddings are added element-wise at each position
+    // So we need to accumulate gradients for each position across the batch
+    dim3 grid_size_pos(seq_len, (d_model + 255) / 256);
+    dim3 block_size_pos(256);
+    accumulate_position_gradients_kernel<<<grid_size_pos, block_size_pos>>>(
+        d_grad_embeddings, d_grad_position_embeddings,
+        batch_size, seq_len, d_model
+    );
+    CUDA_CHECK(cudaGetLastError());
+
+    // Cleanup temporary buffers
+    for (int i = 1; i <= num_layers; i++) {
+        cudaFree(block_inputs[i]);
+    }
+    CUDA_CHECK(cudaFree(d_grad_block_input));
+    CUDA_CHECK(cudaFree(d_grad_block_input_temp));
     CUDA_CHECK(cudaFree(d_grad_logits));
     CUDA_CHECK(cudaFree(d_grad_normed));
     CUDA_CHECK(cudaFree(d_grad_block_out));
@@ -730,12 +1089,133 @@ float Transformer::train_step(
     // Backward pass
     backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
 
-    // TODO: Apply optimizer updates (Adam)
-    // For now, just a simple SGD update on embeddings and output projection
-    // scale_matrix(d_grad_token_embeddings, -learning_rate, vocab_size * d_model);
-    // elementwise_add(d_token_embeddings, d_grad_token_embeddings, d_token_embeddings, vocab_size * d_model);
+    // ========================================================================
+    // Apply Adam optimizer updates
+    // ========================================================================
 
-    printf("WARNING: Optimizer updates not yet implemented in train_step()\n");
+    // Allocate optimizer state if not already allocated
+    if (d_m_token_embeddings == nullptr) {
+        allocate_optimizer_state();
+    }
+
+    // Increment training step and compute bias correction terms
+    training_step++;
+    float beta1_t = powf(beta1, training_step);
+    float beta2_t = powf(beta2, training_step);
+
+    // Update embeddings and output projection
+    adam_update(d_token_embeddings, d_grad_token_embeddings,
+               d_m_token_embeddings, d_v_token_embeddings,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               vocab_size * d_model);
+
+    adam_update(d_position_embeddings, d_grad_position_embeddings,
+               d_m_position_embeddings, d_v_position_embeddings,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               max_seq_len * d_model);
+
+    adam_update(d_output_weights, d_grad_output_weights,
+               d_m_output_weights, d_v_output_weights,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               d_model * vocab_size);
+
+    adam_update(d_output_bias, d_grad_output_bias,
+               d_m_output_bias, d_v_output_bias,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               vocab_size);
+
+    adam_update(d_ln_final_gamma, d_grad_ln_final_gamma,
+               d_m_ln_final_gamma, d_v_ln_final_gamma,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               d_model);
+
+    adam_update(d_ln_final_beta, d_grad_ln_final_beta,
+               d_m_ln_final_beta, d_v_ln_final_beta,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               d_model);
+
+    // Update each TransformerBlock's parameters
+    for (int i = 0; i < num_layers; i++) {
+        auto& grads = block_grads[i];
+        auto& optim = block_optim_state[i];
+        TransformerBlock* block = blocks[i];
+
+        // Layer norm 1
+        adam_update(block->d_ln1_gamma, grads.d_grad_ln1_gamma,
+                   optim.d_m_ln1_gamma, optim.d_v_ln1_gamma,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+        adam_update(block->d_ln1_beta, grads.d_grad_ln1_beta,
+                   optim.d_m_ln1_beta, optim.d_v_ln1_beta,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        // Layer norm 2
+        adam_update(block->d_ln2_gamma, grads.d_grad_ln2_gamma,
+                   optim.d_m_ln2_gamma, optim.d_v_ln2_gamma,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+        adam_update(block->d_ln2_beta, grads.d_grad_ln2_beta,
+                   optim.d_m_ln2_beta, optim.d_v_ln2_beta,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        // Attention parameters
+        adam_update(block->attention->d_W_Q, grads.d_grad_attn_W_Q,
+                   optim.d_m_attn_W_Q, optim.d_v_attn_W_Q,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_model);
+        adam_update(block->attention->d_b_Q, grads.d_grad_attn_b_Q,
+                   optim.d_m_attn_b_Q, optim.d_v_attn_b_Q,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        adam_update(block->attention->d_W_K, grads.d_grad_attn_W_K,
+                   optim.d_m_attn_W_K, optim.d_v_attn_W_K,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_model);
+        adam_update(block->attention->d_b_K, grads.d_grad_attn_b_K,
+                   optim.d_m_attn_b_K, optim.d_v_attn_b_K,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        adam_update(block->attention->d_W_V, grads.d_grad_attn_W_V,
+                   optim.d_m_attn_W_V, optim.d_v_attn_W_V,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_model);
+        adam_update(block->attention->d_b_V, grads.d_grad_attn_b_V,
+                   optim.d_m_attn_b_V, optim.d_v_attn_b_V,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        adam_update(block->attention->d_W_O, grads.d_grad_attn_W_O,
+                   optim.d_m_attn_W_O, optim.d_v_attn_W_O,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_model);
+        adam_update(block->attention->d_b_O, grads.d_grad_attn_b_O,
+                   optim.d_m_attn_b_O, optim.d_v_attn_b_O,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        // FFN parameters
+        adam_update(block->ffn->d_W1, grads.d_grad_ffn_W1,
+                   optim.d_m_ffn_W1, optim.d_v_ffn_W1,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_ff * d_model);
+        adam_update(block->ffn->d_b1, grads.d_grad_ffn_b1,
+                   optim.d_m_ffn_b1, optim.d_v_ffn_b1,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_ff);
+
+        adam_update(block->ffn->d_W2, grads.d_grad_ffn_W2,
+                   optim.d_m_ffn_W2, optim.d_v_ffn_W2,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_ff);
+        adam_update(block->ffn->d_b2, grads.d_grad_ffn_b2,
+                   optim.d_m_ffn_b2, optim.d_v_ffn_b2,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+    }
 
     // Cleanup
     CUDA_CHECK(cudaFree(d_token_ids_train));
