@@ -6,6 +6,14 @@
 #include <cuda_runtime.h>
 #include <vector>
 
+// Training diagnostics structure
+struct TrainingDiagnostics {
+    float loss;
+    float grad_norm;
+    float param_norm;
+    bool has_nan_or_inf;
+};
+
 // GPT-style decoder-only transformer for language modeling
 class Transformer {
 public:
@@ -86,6 +94,25 @@ public:
         int seq_len,
         float learning_rate
     );
+
+    // Training step with diagnostics
+    TrainingDiagnostics train_step_with_diagnostics(
+        const int* h_token_ids,    // [batch_size, seq_len]
+        const int* h_targets,      // [batch_size, seq_len]
+        int batch_size,
+        int seq_len,
+        float learning_rate,
+        bool detailed_logging = false
+    );
+
+    // Compute total gradient norm
+    float compute_gradient_norm();
+
+    // Compute total parameter norm
+    float compute_parameter_norm();
+
+    // Check if gradients or parameters contain NaN or Inf
+    bool check_nan_or_inf();
 
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);

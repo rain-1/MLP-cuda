@@ -4,6 +4,7 @@
 #include "matrix_ops.h"
 #include "loss.h"
 #include "adam.h"
+#include "diagnostics.h"
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <curand_kernel.h>
@@ -1222,4 +1223,365 @@ float Transformer::train_step(
     CUDA_CHECK(cudaFree(d_targets_train));
 
     return loss;
+}
+
+// ============================================================================
+// Diagnostic Methods
+// ============================================================================
+
+float Transformer::compute_gradient_norm() {
+    // Compute L2 norm of all gradients
+    float total_norm_sq = 0.0f;
+
+    // Embeddings and output
+    if (d_grad_token_embeddings) {
+        float norm = compute_l2_norm(d_grad_token_embeddings, vocab_size * d_model);
+        total_norm_sq += norm * norm;
+    }
+    if (d_grad_position_embeddings) {
+        float norm = compute_l2_norm(d_grad_position_embeddings, max_seq_len * d_model);
+        total_norm_sq += norm * norm;
+    }
+    if (d_grad_output_weights) {
+        float norm = compute_l2_norm(d_grad_output_weights, d_model * vocab_size);
+        total_norm_sq += norm * norm;
+    }
+    if (d_grad_output_bias) {
+        float norm = compute_l2_norm(d_grad_output_bias, vocab_size);
+        total_norm_sq += norm * norm;
+    }
+    if (d_grad_ln_final_gamma) {
+        float norm = compute_l2_norm(d_grad_ln_final_gamma, d_model);
+        total_norm_sq += norm * norm;
+    }
+    if (d_grad_ln_final_beta) {
+        float norm = compute_l2_norm(d_grad_ln_final_beta, d_model);
+        total_norm_sq += norm * norm;
+    }
+
+    // Block gradients
+    for (int i = 0; i < num_layers; i++) {
+        auto& grads = block_grads[i];
+
+        float norm;
+        norm = compute_l2_norm(grads.d_grad_ln1_gamma, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_ln1_beta, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_ln2_gamma, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_ln2_beta, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = compute_l2_norm(grads.d_grad_attn_W_Q, d_model * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_attn_b_Q, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_attn_W_K, d_model * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_attn_b_K, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_attn_W_V, d_model * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_attn_b_V, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_attn_W_O, d_model * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_attn_b_O, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = compute_l2_norm(grads.d_grad_ffn_W1, d_ff * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_ffn_b1, d_ff);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_ffn_W2, d_model * d_ff);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(grads.d_grad_ffn_b2, d_model);
+        total_norm_sq += norm * norm;
+    }
+
+    return sqrtf(total_norm_sq);
+}
+
+float Transformer::compute_parameter_norm() {
+    // Compute L2 norm of all parameters
+    float total_norm_sq = 0.0f;
+
+    // Embeddings and output
+    float norm;
+    norm = compute_l2_norm(d_token_embeddings, vocab_size * d_model);
+    total_norm_sq += norm * norm;
+    norm = compute_l2_norm(d_position_embeddings, max_seq_len * d_model);
+    total_norm_sq += norm * norm;
+    norm = compute_l2_norm(d_output_weights, d_model * vocab_size);
+    total_norm_sq += norm * norm;
+    norm = compute_l2_norm(d_output_bias, vocab_size);
+    total_norm_sq += norm * norm;
+    norm = compute_l2_norm(d_ln_final_gamma, d_model);
+    total_norm_sq += norm * norm;
+    norm = compute_l2_norm(d_ln_final_beta, d_model);
+    total_norm_sq += norm * norm;
+
+    // Block parameters
+    for (int i = 0; i < num_layers; i++) {
+        TransformerBlock* block = blocks[i];
+
+        norm = compute_l2_norm(block->d_ln1_gamma, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->d_ln1_beta, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->d_ln2_gamma, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->d_ln2_beta, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = compute_l2_norm(block->attention->d_W_Q, d_model * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->attention->d_b_Q, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->attention->d_W_K, d_model * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->attention->d_b_K, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->attention->d_W_V, d_model * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->attention->d_b_V, d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->attention->d_W_O, d_model * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->attention->d_b_O, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = compute_l2_norm(block->ffn->d_W1, d_ff * d_model);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->ffn->d_b1, d_ff);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->ffn->d_W2, d_model * d_ff);
+        total_norm_sq += norm * norm;
+        norm = compute_l2_norm(block->ffn->d_b2, d_model);
+        total_norm_sq += norm * norm;
+    }
+
+    return sqrtf(total_norm_sq);
+}
+
+bool Transformer::check_nan_or_inf() {
+    // Check gradients
+    if (d_grad_token_embeddings && has_nan_or_inf(d_grad_token_embeddings, vocab_size * d_model)) {
+        return true;
+    }
+    if (d_grad_position_embeddings && has_nan_or_inf(d_grad_position_embeddings, max_seq_len * d_model)) {
+        return true;
+    }
+    if (d_grad_output_weights && has_nan_or_inf(d_grad_output_weights, d_model * vocab_size)) {
+        return true;
+    }
+
+    // Check parameters
+    if (has_nan_or_inf(d_token_embeddings, vocab_size * d_model)) {
+        return true;
+    }
+    if (has_nan_or_inf(d_output_weights, d_model * vocab_size)) {
+        return true;
+    }
+
+    return false;
+}
+
+TrainingDiagnostics Transformer::train_step_with_diagnostics(
+    const int* h_token_ids,
+    const int* h_targets,
+    int batch_size,
+    int seq_len,
+    float learning_rate,
+    bool detailed_logging
+) {
+    // Copy inputs to device
+    int* d_token_ids_train;
+    int* d_targets_train;
+    CUDA_CHECK(cudaMalloc(&d_token_ids_train, batch_size * seq_len * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_targets_train, batch_size * seq_len * sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_token_ids_train, h_token_ids, batch_size * seq_len * sizeof(int),
+                         cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_targets_train, h_targets, batch_size * seq_len * sizeof(int),
+                         cudaMemcpyHostToDevice));
+
+    // Forward pass
+    forward_device(d_token_ids_train, d_logits_buffer, batch_size, seq_len);
+
+    // Compute loss
+    float loss = lm_cross_entropy_loss(
+        d_logits_buffer, d_targets_train,
+        batch_size, seq_len, vocab_size,
+        nullptr
+    );
+
+    // Backward pass
+    backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
+
+    // Compute diagnostics BEFORE optimizer update
+    TrainingDiagnostics diag;
+    diag.loss = loss;
+    diag.grad_norm = compute_gradient_norm();
+    diag.has_nan_or_inf = check_nan_or_inf();
+
+    // Detailed per-layer logging if requested
+    if (detailed_logging) {
+        printf("  [DETAILED DIAGNOSTICS]\n");
+
+        // Log gradient statistics for embeddings
+        if (d_grad_token_embeddings) {
+            TensorStats stats = compute_tensor_stats(d_grad_token_embeddings, vocab_size * d_model);
+            printf("    Token Embeddings Grad: L2=%.6e, Max=%.6e, Min=%.6e\n",
+                   stats.l2_norm, stats.max_val, stats.min_val);
+        }
+
+        // Log gradient statistics for each layer
+        for (int i = 0; i < num_layers; i++) {
+            auto& grads = block_grads[i];
+
+            TensorStats stats_q = compute_tensor_stats(grads.d_grad_attn_W_Q, d_model * d_model);
+            TensorStats stats_ffn1 = compute_tensor_stats(grads.d_grad_ffn_W1, d_ff * d_model);
+
+            printf("    Layer %d - Attn Q Grad: L2=%.6e, FFN W1 Grad: L2=%.6e\n",
+                   i, stats_q.l2_norm, stats_ffn1.l2_norm);
+        }
+    }
+
+    // ========================================================================
+    // Apply Adam optimizer updates
+    // ========================================================================
+
+    // Allocate optimizer state if not already allocated
+    if (d_m_token_embeddings == nullptr) {
+        allocate_optimizer_state();
+    }
+
+    // Increment training step and compute bias correction terms
+    training_step++;
+    float beta1_t = powf(beta1, training_step);
+    float beta2_t = powf(beta2, training_step);
+
+    // Update embeddings and output projection
+    adam_update(d_token_embeddings, d_grad_token_embeddings,
+               d_m_token_embeddings, d_v_token_embeddings,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               vocab_size * d_model);
+
+    adam_update(d_position_embeddings, d_grad_position_embeddings,
+               d_m_position_embeddings, d_v_position_embeddings,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               max_seq_len * d_model);
+
+    adam_update(d_output_weights, d_grad_output_weights,
+               d_m_output_weights, d_v_output_weights,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               d_model * vocab_size);
+
+    adam_update(d_output_bias, d_grad_output_bias,
+               d_m_output_bias, d_v_output_bias,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               vocab_size);
+
+    adam_update(d_ln_final_gamma, d_grad_ln_final_gamma,
+               d_m_ln_final_gamma, d_v_ln_final_gamma,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               d_model);
+
+    adam_update(d_ln_final_beta, d_grad_ln_final_beta,
+               d_m_ln_final_beta, d_v_ln_final_beta,
+               learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+               d_model);
+
+    // Update each TransformerBlock's parameters
+    for (int i = 0; i < num_layers; i++) {
+        auto& grads = block_grads[i];
+        auto& optim = block_optim_state[i];
+        TransformerBlock* block = blocks[i];
+
+        // Layer norm 1
+        adam_update(block->d_ln1_gamma, grads.d_grad_ln1_gamma,
+                   optim.d_m_ln1_gamma, optim.d_v_ln1_gamma,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+        adam_update(block->d_ln1_beta, grads.d_grad_ln1_beta,
+                   optim.d_m_ln1_beta, optim.d_v_ln1_beta,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        // Layer norm 2
+        adam_update(block->d_ln2_gamma, grads.d_grad_ln2_gamma,
+                   optim.d_m_ln2_gamma, optim.d_v_ln2_gamma,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+        adam_update(block->d_ln2_beta, grads.d_grad_ln2_beta,
+                   optim.d_m_ln2_beta, optim.d_v_ln2_beta,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        // Attention parameters
+        adam_update(block->attention->d_W_Q, grads.d_grad_attn_W_Q,
+                   optim.d_m_attn_W_Q, optim.d_v_attn_W_Q,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_model);
+        adam_update(block->attention->d_b_Q, grads.d_grad_attn_b_Q,
+                   optim.d_m_attn_b_Q, optim.d_v_attn_b_Q,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        adam_update(block->attention->d_W_K, grads.d_grad_attn_W_K,
+                   optim.d_m_attn_W_K, optim.d_v_attn_W_K,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_model);
+        adam_update(block->attention->d_b_K, grads.d_grad_attn_b_K,
+                   optim.d_m_attn_b_K, optim.d_v_attn_b_K,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        adam_update(block->attention->d_W_V, grads.d_grad_attn_W_V,
+                   optim.d_m_attn_W_V, optim.d_v_attn_W_V,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_model);
+        adam_update(block->attention->d_b_V, grads.d_grad_attn_b_V,
+                   optim.d_m_attn_b_V, optim.d_v_attn_b_V,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        adam_update(block->attention->d_W_O, grads.d_grad_attn_W_O,
+                   optim.d_m_attn_W_O, optim.d_v_attn_W_O,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_model);
+        adam_update(block->attention->d_b_O, grads.d_grad_attn_b_O,
+                   optim.d_m_attn_b_O, optim.d_v_attn_b_O,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+
+        // FFN parameters
+        adam_update(block->ffn->d_W1, grads.d_grad_ffn_W1,
+                   optim.d_m_ffn_W1, optim.d_v_ffn_W1,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_ff * d_model);
+        adam_update(block->ffn->d_b1, grads.d_grad_ffn_b1,
+                   optim.d_m_ffn_b1, optim.d_v_ffn_b1,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_ff);
+
+        adam_update(block->ffn->d_W2, grads.d_grad_ffn_W2,
+                   optim.d_m_ffn_W2, optim.d_v_ffn_W2,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model * d_ff);
+        adam_update(block->ffn->d_b2, grads.d_grad_ffn_b2,
+                   optim.d_m_ffn_b2, optim.d_v_ffn_b2,
+                   learning_rate, beta1, beta2, epsilon, beta1_t, beta2_t,
+                   d_model);
+    }
+
+    // Compute parameter norm AFTER optimizer update
+    diag.param_norm = compute_parameter_norm();
+
+    // Cleanup
+    CUDA_CHECK(cudaFree(d_token_ids_train));
+    CUDA_CHECK(cudaFree(d_targets_train));
+
+    return diag;
 }

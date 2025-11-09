@@ -3,6 +3,7 @@
 #include "transformer.h"
 #include "text_dataset.h"
 #include "wandb_logger.h"
+#include "diagnostics.h"
 #include <stdio.h>
 #include <string>
 #include <vector>
@@ -93,12 +94,21 @@ int run_training(
     printf("   Training for %d epochs with batch size %d\n", num_epochs, batch_size);
     printf("   Learning rate: %.4f\n\n", learning_rate);
 
+    // Initialize diagnostic logger
+    DiagnosticLogger diag_logger;
+    diag_logger.set_enabled(true);
+    diag_logger.set_grad_norm_threshold(100.0f);
+    diag_logger.set_param_norm_threshold(1000.0f);
+    diag_logger.set_loss_increase_threshold(2.0f);
+
     time_t start_time = time(nullptr);
 
     for (int epoch = 0; epoch < num_epochs; epoch++) {
         printf("   === Epoch %d/%d ===\n", epoch + 1, num_epochs);
 
         float total_loss = 0.0f;
+        float total_grad_norm = 0.0f;
+        float total_param_norm = 0.0f;
         int num_samples = 0;
 
         // Shuffle dataset every few epochs
@@ -114,20 +124,48 @@ int run_training(
                 break;
             }
 
-            // Training step: forward + backward + optimizer update
-            float loss = model.train_step(inputs.data(), targets.data(),
-                                         batch_size, seq_len, learning_rate);
+            int global_step = epoch * num_batches + batch_idx;
 
-            total_loss += loss;
+            // Training step with diagnostics
+            // Enable detailed logging on first batch of each epoch
+            bool detailed_logging = (batch_idx == 0);
+            TrainingDiagnostics diag = model.train_step_with_diagnostics(
+                inputs.data(), targets.data(),
+                batch_size, seq_len, learning_rate,
+                detailed_logging
+            );
+
+            total_loss += diag.loss;
+            total_grad_norm += diag.grad_norm;
+            total_param_norm += diag.param_norm;
             num_samples++;
+
+            // Log diagnostics every 10 batches
+            if ((batch_idx + 1) % 10 == 0 || batch_idx == 0) {
+                diag_logger.log_step(global_step, diag.loss, learning_rate,
+                                   diag.grad_norm, diag.param_norm);
+
+                // Check for divergence
+                if (diag_logger.check_divergence(global_step, diag.loss)) {
+                    printf("\n   [ERROR] Training has diverged! Stopping...\n");
+                    return 1;
+                }
+
+                // Check for NaN or Inf
+                if (diag.has_nan_or_inf) {
+                    printf("\n   [ERROR] NaN or Inf detected in gradients/parameters! Stopping...\n");
+                    return 1;
+                }
+            }
 
             // Log to wandb
             if (use_wandb) {
-                int global_step = epoch * num_batches + batch_idx;
                 wandb_logger.set_step(global_step);
 
                 std::map<std::string, double> metrics;
-                metrics["train/loss"] = loss;
+                metrics["train/loss"] = diag.loss;
+                metrics["train/grad_norm"] = diag.grad_norm;
+                metrics["train/param_norm"] = diag.param_norm;
                 metrics["train/learning_rate"] = learning_rate;
                 metrics["train/epoch"] = epoch + 1;
                 wandb_logger.log_metrics(metrics);
@@ -135,14 +173,18 @@ int run_training(
 
             // Print progress
             if ((batch_idx + 1) % 10 == 0 || batch_idx == num_batches - 1) {
-                printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f",
-                       epoch + 1, num_epochs, batch_idx + 1, num_batches, loss);
+                printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f, GradNorm: %.2f",
+                       epoch + 1, num_epochs, batch_idx + 1, num_batches,
+                       diag.loss, diag.grad_norm);
                 fflush(stdout);
             }
         }
 
         float avg_loss = total_loss / num_samples;
-        printf("\n   Epoch %d complete - Average loss: %.4f\n\n", epoch + 1, avg_loss);
+        float avg_grad_norm = total_grad_norm / num_samples;
+        float avg_param_norm = total_param_norm / num_samples;
+        printf("\n   Epoch %d complete - Avg Loss: %.4f | Avg GradNorm: %.2f | Avg ParamNorm: %.2f\n\n",
+               epoch + 1, avg_loss, avg_grad_norm, avg_param_norm);
 
         // Log epoch average loss to wandb
         if (use_wandb) {
@@ -173,6 +215,9 @@ int run_training(
     time_t end_time = time(nullptr);
     int elapsed = (int)(end_time - start_time);
     printf("Training complete in %d seconds\n\n", elapsed);
+
+    // Print diagnostic summary
+    diag_logger.print_summary();
 
     // Log training time to wandb
     if (use_wandb) {
