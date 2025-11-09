@@ -18,6 +18,7 @@ void add_residual(
 // FFN(x) = GELU(x·W1 + b1)·W2 + b2
 class FeedForwardNetwork {
     friend class Transformer;  // Allow Transformer to access private members for training
+    friend bool test_ffn_w1_gradient();  // Allow test to access private members
 
 public:
     FeedForwardNetwork(

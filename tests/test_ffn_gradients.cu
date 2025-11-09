@@ -107,17 +107,7 @@ bool test_ffn_w1_gradient() {
     int size = total_tokens * d_model;
     float scale = 2.0f / size;
 
-    dim3 block(256);
-    dim3 grid((size + block.x - 1) / block.x);
-
-    auto compute_grad = [=] __device__ (int idx) {
-        if (idx < size) {
-            d_grad_output[idx] = scale * (d_output[idx] - d_target[idx]);
-        }
-    };
-
-    // Use a kernel to compute grad
-    cudaMemset(d_grad_output, 0, size * sizeof(float));
+    // Compute gradient on host
     float* h_output = new float[size];
     float* h_target = new float[size];
     CUDA_CHECK(cudaMemcpy(h_output, d_output, size * sizeof(float), cudaMemcpyDeviceToHost));
