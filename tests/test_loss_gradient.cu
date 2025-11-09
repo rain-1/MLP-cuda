@@ -2,8 +2,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#include "../src/loss.h"
-#include "../src/matrix_ops.h"
+#include "loss.h"
+#include "matrix_ops.h"
 
 // CPU reference implementation for cross-entropy loss
 float cpu_cross_entropy_loss(
