@@ -1316,37 +1316,38 @@ void Transformer::clip_all_gradients(float max_norm) {
     float total_norm = compute_gradient_norm();
 
     if (total_norm > max_norm) {
+        // Compute single scale factor for ALL gradients
         float scale = max_norm / total_norm;
 
-        // Scale all gradients
-        clip_gradients(d_grad_token_embeddings, vocab_size * d_model, max_norm);
-        clip_gradients(d_grad_position_embeddings, max_seq_len * d_model, max_norm);
-        clip_gradients(d_grad_output_weights, d_model * vocab_size, max_norm);
-        clip_gradients(d_grad_output_bias, vocab_size, max_norm);
-        clip_gradients(d_grad_ln_final_gamma, d_model, max_norm);
-        clip_gradients(d_grad_ln_final_beta, d_model, max_norm);
+        // Scale all gradients by this single factor (global norm clipping)
+        scale_gradients(d_grad_token_embeddings, vocab_size * d_model, scale);
+        scale_gradients(d_grad_position_embeddings, max_seq_len * d_model, scale);
+        scale_gradients(d_grad_output_weights, d_model * vocab_size, scale);
+        scale_gradients(d_grad_output_bias, vocab_size, scale);
+        scale_gradients(d_grad_ln_final_gamma, d_model, scale);
+        scale_gradients(d_grad_ln_final_beta, d_model, scale);
 
         for (int i = 0; i < num_layers; i++) {
             auto& grads = block_grads[i];
 
-            clip_gradients(grads.d_grad_ln1_gamma, d_model, max_norm);
-            clip_gradients(grads.d_grad_ln1_beta, d_model, max_norm);
-            clip_gradients(grads.d_grad_ln2_gamma, d_model, max_norm);
-            clip_gradients(grads.d_grad_ln2_beta, d_model, max_norm);
+            scale_gradients(grads.d_grad_ln1_gamma, d_model, scale);
+            scale_gradients(grads.d_grad_ln1_beta, d_model, scale);
+            scale_gradients(grads.d_grad_ln2_gamma, d_model, scale);
+            scale_gradients(grads.d_grad_ln2_beta, d_model, scale);
 
-            clip_gradients(grads.d_grad_attn_W_Q, d_model * d_model, max_norm);
-            clip_gradients(grads.d_grad_attn_b_Q, d_model, max_norm);
-            clip_gradients(grads.d_grad_attn_W_K, d_model * d_model, max_norm);
-            clip_gradients(grads.d_grad_attn_b_K, d_model, max_norm);
-            clip_gradients(grads.d_grad_attn_W_V, d_model * d_model, max_norm);
-            clip_gradients(grads.d_grad_attn_b_V, d_model, max_norm);
-            clip_gradients(grads.d_grad_attn_W_O, d_model * d_model, max_norm);
-            clip_gradients(grads.d_grad_attn_b_O, d_model, max_norm);
+            scale_gradients(grads.d_grad_attn_W_Q, d_model * d_model, scale);
+            scale_gradients(grads.d_grad_attn_b_Q, d_model, scale);
+            scale_gradients(grads.d_grad_attn_W_K, d_model * d_model, scale);
+            scale_gradients(grads.d_grad_attn_b_K, d_model, scale);
+            scale_gradients(grads.d_grad_attn_W_V, d_model * d_model, scale);
+            scale_gradients(grads.d_grad_attn_b_V, d_model, scale);
+            scale_gradients(grads.d_grad_attn_W_O, d_model * d_model, scale);
+            scale_gradients(grads.d_grad_attn_b_O, d_model, scale);
 
-            clip_gradients(grads.d_grad_ffn_W1, d_ff * d_model, max_norm);
-            clip_gradients(grads.d_grad_ffn_b1, d_ff, max_norm);
-            clip_gradients(grads.d_grad_ffn_W2, d_model * d_ff, max_norm);
-            clip_gradients(grads.d_grad_ffn_b2, d_model, max_norm);
+            scale_gradients(grads.d_grad_ffn_W1, d_ff * d_model, scale);
+            scale_gradients(grads.d_grad_ffn_b1, d_ff, scale);
+            scale_gradients(grads.d_grad_ffn_W2, d_model * d_ff, scale);
+            scale_gradients(grads.d_grad_ffn_b2, d_model, scale);
         }
     }
 }

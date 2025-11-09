@@ -158,6 +158,14 @@ float gradient_norm(const float* d_grad, int size) {
     return sqrtf(total);
 }
 
+void scale_gradients(float* d_grad, int size, float scale) {
+    int blockSize = 256;
+    int gridSize = (size + blockSize - 1) / blockSize;
+
+    scale_kernel<<<gridSize, blockSize>>>(d_grad, size, scale);
+    CUDA_CHECK(cudaGetLastError());
+}
+
 void clip_gradients(float* d_grad, int size, float max_norm) {
     float norm = gradient_norm(d_grad, size);
 

@@ -6,6 +6,9 @@
 // Compute L2 norm of a gradient tensor
 float gradient_norm(const float* d_grad, int size);
 
+// Scale gradients by a constant factor
+void scale_gradients(float* d_grad, int size, float scale);
+
 // Clip gradients by global norm
 // If ||grad|| > max_norm, scale grad by max_norm / ||grad||
 void clip_gradients(float* d_grad, int size, float max_norm);
