@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <algorithm>
 
 void generate_positional_encoding(float* encoding, int seq_len, int d_model) {
     // Standard positional encoding: PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
