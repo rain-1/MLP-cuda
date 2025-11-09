@@ -161,6 +161,9 @@ int run_training(
                 float grad_norm = model.compute_gradient_norm();
                 max_grad_norm = fmaxf(max_grad_norm, grad_norm);
 
+                // Get per-layer gradient norms
+                std::vector<float> layer_norms = model.compute_per_layer_gradient_norms();
+
                 // Log gradient norm
                 if (use_wandb) {
                     int global_step = epoch * num_batches + batch_idx;
@@ -168,7 +171,29 @@ int run_training(
 
                     std::map<std::string, double> grad_metrics;
                     grad_metrics["train/grad_norm"] = grad_norm;
+
+                    // Log per-layer norms
+                    if (!layer_norms.empty()) {
+                        grad_metrics["train/grad_norm_embeddings"] = layer_norms[0];
+                        for (int i = 0; i < num_layers; i++) {
+                            char key[64];
+                            snprintf(key, sizeof(key), "train/grad_norm_layer%d", i);
+                            grad_metrics[key] = layer_norms[1 + i];
+                        }
+                        grad_metrics["train/grad_norm_output"] = layer_norms[num_layers + 1];
+                    }
+
                     wandb_logger.log_metrics(grad_metrics);
+                }
+
+                // Print per-layer gradient info every 50 batches
+                if (batch_idx % 50 == 0 && !layer_norms.empty()) {
+                    printf("\n   Per-layer gradient norms: ");
+                    printf("emb=%.2f ", layer_norms[0]);
+                    for (int i = 0; i < num_layers; i++) {
+                        printf("L%d=%.2f ", i, layer_norms[1 + i]);
+                    }
+                    printf("out=%.2f\n", layer_norms[num_layers + 1]);
                 }
             }
 

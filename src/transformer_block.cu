@@ -1,6 +1,7 @@
 #include "transformer_block.h"
 #include "transformer_layers.h"
 #include "matrix_ops.h"
+#include "gradient_utils.h"
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <stdio.h>
@@ -203,9 +204,11 @@ TransformerBlock::TransformerBlock(
     int num_heads,
     int d_ff,
     int max_batch_size,
-    int max_seq_len
+    int max_seq_len,
+    float residual_scale
 ) : d_model(d_model), num_heads(num_heads), d_ff(d_ff),
-    max_batch_size(max_batch_size), max_seq_len(max_seq_len)
+    max_batch_size(max_batch_size), max_seq_len(max_seq_len),
+    residual_scale(residual_scale)
 {
     attention = new MultiHeadAttention(d_model, num_heads, max_seq_len, max_batch_size);
     ffn = new FeedForwardNetwork(d_model, d_ff, max_batch_size, max_seq_len);
@@ -275,9 +278,9 @@ void TransformerBlock::forward_device(
     attention->forward_device_to_device(d_attn_normed, d_attn_output,
                                        batch_size, seq_len, d_mask);
 
-    // 3. Add residual connection: attn_output = input + attn_output
+    // 3. Add residual connection: attn_output = input + residual_scale * attn_output
     int total_size = batch_size * seq_len * d_model;
-    add_residual(d_input, d_attn_output, d_attn_output, total_size);
+    add_residual(d_input, d_attn_output, d_attn_output, total_size, residual_scale);
 
     // 4. Layer norm before FFN
     layer_norm(d_attn_output, d_ffn_normed, d_ln2_gamma, d_ln2_beta,
@@ -286,20 +289,21 @@ void TransformerBlock::forward_device(
     // 5. Feed-forward network
     ffn->forward_device(d_ffn_normed, d_ffn_output, batch_size, seq_len);
 
-    // 6. Add residual connection: output = attn_output + ffn_output
-    add_residual(d_attn_output, d_ffn_output, d_output, total_size);
+    // 6. Add residual connection: output = attn_output + residual_scale * ffn_output
+    add_residual(d_attn_output, d_ffn_output, d_output, total_size, residual_scale);
 }
 
-// Residual connection helper kernel
+// Residual connection helper kernel with scaling
 __global__ void add_residual_kernel(
     const float* input,
     const float* residual,
     float* output,
-    int size
+    int size,
+    float scale
 ) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
-        output[idx] = input[idx] + residual[idx];
+        output[idx] = input[idx] + scale * residual[idx];
     }
 }
 
@@ -307,12 +311,13 @@ void add_residual(
     const float* d_input,
     const float* d_residual,
     float* d_output,
-    int size
+    int size,
+    float scale
 ) {
     int block_size = 256;
     int grid_size = (size + block_size - 1) / block_size;
     add_residual_kernel<<<grid_size, block_size>>>(
-        d_input, d_residual, d_output, size
+        d_input, d_residual, d_output, size, scale
     );
     CUDA_CHECK(cudaGetLastError());
 }
@@ -417,8 +422,9 @@ void TransformerBlock::backward_device(
     CUDA_CHECK(cudaMalloc(&d_temp, total_size * sizeof(float)));
 
     // ========================================================================
-    // Backward through second residual: output = attn_output + ffn_output
-    // Gradient splits equally to both paths
+    // Backward through second residual: output = attn_output + residual_scale * ffn_output
+    // grad_attn_output = grad_output
+    // grad_ffn_output = residual_scale * grad_output
     // ========================================================================
 
     CUDA_CHECK(cudaMemcpy(d_grad_attn_output_from_res2, d_grad_output,
@@ -426,6 +432,8 @@ void TransformerBlock::backward_device(
     float *d_grad_ffn_output = d_temp;  // Reuse temp buffer
     CUDA_CHECK(cudaMemcpy(d_grad_ffn_output, d_grad_output,
                          total_size * sizeof(float), cudaMemcpyDeviceToDevice));
+    // Scale the gradient for the residual path
+    scale_gradients(d_grad_ffn_output, total_size, residual_scale);
 
     // ========================================================================
     // Backward through FFN
@@ -463,14 +471,17 @@ void TransformerBlock::backward_device(
                     d_grad_attn_output_total, total_size);
 
     // ========================================================================
-    // Backward through first residual: attn_output = input + attn_output
-    // Gradient splits to both paths
+    // Backward through first residual: attn_output = input + residual_scale * attn_output
+    // grad_input = grad_attn_output_total
+    // grad_attn_output = residual_scale * grad_attn_output_total
     // ========================================================================
 
     CUDA_CHECK(cudaMemcpy(d_grad_input_from_res1, d_grad_attn_output_total,
                          total_size * sizeof(float), cudaMemcpyDeviceToDevice));
     CUDA_CHECK(cudaMemcpy(d_grad_attn_output_from_attn, d_grad_attn_output_total,
                          total_size * sizeof(float), cudaMemcpyDeviceToDevice));
+    // Scale the gradient for the residual path
+    scale_gradients(d_grad_attn_output_from_attn, total_size, residual_scale);
 
     // ========================================================================
     // Backward through attention

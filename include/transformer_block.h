@@ -4,12 +4,13 @@
 #include "multi_head_attention.h"
 #include <cuda_runtime.h>
 
-// Helper function for residual connections
+// Helper function for residual connections with scaling
 void add_residual(
     const float* d_input,
     const float* d_residual,
     float* d_output,
-    int size
+    int size,
+    float scale = 1.0f  // Default to 1.0 (no scaling) for backward compatibility
 );
 
 // Feed-Forward Network
@@ -84,7 +85,8 @@ public:
         int num_heads,
         int d_ff,
         int max_batch_size,
-        int max_seq_len
+        int max_seq_len,
+        float residual_scale = 1.0f  // Scale factor for residual connections
     );
 
     ~TransformerBlock();
@@ -126,6 +128,7 @@ private:
     int d_ff;
     int max_batch_size;
     int max_seq_len;
+    float residual_scale;  // Scale factor for residual connections
 
     // Components
     MultiHeadAttention* attention;

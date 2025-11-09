@@ -119,17 +119,28 @@ Transformer::Transformer(
     int num_heads,
     int d_ff,
     int max_seq_len,
-    int max_batch_size
+    int max_batch_size,
+    float residual_scale
 ) : vocab_size(vocab_size), d_model(d_model), num_layers(num_layers),
     num_heads(num_heads), d_ff(d_ff), max_seq_len(max_seq_len),
     max_batch_size(max_batch_size), training_step(0)
 {
+    // Auto-compute residual scale if not specified
+    if (residual_scale < 0.0f) {
+        this->residual_scale = 1.0f / sqrtf((float)num_layers);
+    } else {
+        this->residual_scale = residual_scale;
+    }
+
+    printf("Transformer: Using residual_scale = %.4f (num_layers=%d)\n",
+           this->residual_scale, num_layers);
+
     allocate_memory();
 
-    // Create transformer blocks
+    // Create transformer blocks with residual scaling
     for (int i = 0; i < num_layers; i++) {
         blocks.push_back(new TransformerBlock(
-            d_model, num_heads, d_ff, max_batch_size, max_seq_len
+            d_model, num_heads, d_ff, max_batch_size, max_seq_len, this->residual_scale
         ));
     }
 
@@ -1350,4 +1361,83 @@ void Transformer::clip_all_gradients(float max_norm) {
             scale_gradients(grads.d_grad_ffn_b2, d_model, scale);
         }
     }
+}
+
+std::vector<float> Transformer::compute_per_layer_gradient_norms() {
+    std::vector<float> layer_norms;
+
+    // 1. Embeddings norm (token + position + final LN)
+    float emb_norm_sq = 0.0f;
+    float norm;
+
+    norm = gradient_norm(d_grad_token_embeddings, vocab_size * d_model);
+    emb_norm_sq += norm * norm;
+
+    norm = gradient_norm(d_grad_position_embeddings, max_seq_len * d_model);
+    emb_norm_sq += norm * norm;
+
+    norm = gradient_norm(d_grad_ln_final_gamma, d_model);
+    emb_norm_sq += norm * norm;
+
+    norm = gradient_norm(d_grad_ln_final_beta, d_model);
+    emb_norm_sq += norm * norm;
+
+    layer_norms.push_back(sqrtf(emb_norm_sq));
+
+    // 2. Per-transformer-layer norms
+    for (int i = 0; i < num_layers; i++) {
+        auto& grads = block_grads[i];
+        float layer_norm_sq = 0.0f;
+
+        // Layer norm parameters
+        norm = gradient_norm(grads.d_grad_ln1_gamma, d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_ln1_beta, d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_ln2_gamma, d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_ln2_beta, d_model);
+        layer_norm_sq += norm * norm;
+
+        // Attention parameters
+        norm = gradient_norm(grads.d_grad_attn_W_Q, d_model * d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_attn_b_Q, d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_attn_W_K, d_model * d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_attn_b_K, d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_attn_W_V, d_model * d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_attn_b_V, d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_attn_W_O, d_model * d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_attn_b_O, d_model);
+        layer_norm_sq += norm * norm;
+
+        // FFN parameters
+        norm = gradient_norm(grads.d_grad_ffn_W1, d_ff * d_model);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_ffn_b1, d_ff);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_ffn_W2, d_model * d_ff);
+        layer_norm_sq += norm * norm;
+        norm = gradient_norm(grads.d_grad_ffn_b2, d_model);
+        layer_norm_sq += norm * norm;
+
+        layer_norms.push_back(sqrtf(layer_norm_sq));
+    }
+
+    // 3. Output projection norm
+    float out_norm_sq = 0.0f;
+    norm = gradient_norm(d_grad_output_weights, d_model * vocab_size);
+    out_norm_sq += norm * norm;
+    norm = gradient_norm(d_grad_output_bias, vocab_size);
+    out_norm_sq += norm * norm;
+
+    layer_norms.push_back(sqrtf(out_norm_sq));
+
+    return layer_norms;
 }

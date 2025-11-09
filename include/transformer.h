@@ -16,7 +16,8 @@ public:
         int num_heads,
         int d_ff,
         int max_seq_len,
-        int max_batch_size = 32
+        int max_batch_size = 32,
+        float residual_scale = -1.0f  // -1 means auto: 1/sqrt(num_layers)
     );
 
     ~Transformer();
@@ -94,6 +95,10 @@ public:
     // Compute total gradient norm across all parameters
     float compute_gradient_norm();
 
+    // Compute per-layer gradient norms for debugging
+    // Returns vector of norms: [embeddings, layer0, layer1, ..., output]
+    std::vector<float> compute_per_layer_gradient_norms();
+
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);
 
@@ -112,6 +117,7 @@ private:
     int d_ff;
     int max_seq_len;
     int max_batch_size;
+    float residual_scale;  // Scale factor for residual connections
 
     // Embedding parameters
     float* d_token_embeddings;      // [vocab_size, d_model]
