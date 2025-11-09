@@ -381,3 +381,142 @@ void TransformerBlock::load_parameters(const char* filename) {
     attention->load_parameters((base + ".attn").c_str());
     ffn->load_parameters((base + ".ffn").c_str());
 }
+
+void TransformerBlock::backward_device(
+    const float* d_input,
+    const float* d_grad_output,
+    float* d_grad_input,
+    float* d_grad_ln1_gamma, float* d_grad_ln1_beta,
+    float* d_grad_ln2_gamma, float* d_grad_ln2_beta,
+    float* d_grad_attn_W_Q, float* d_grad_attn_b_Q,
+    float* d_grad_attn_W_K, float* d_grad_attn_b_K,
+    float* d_grad_attn_W_V, float* d_grad_attn_b_V,
+    float* d_grad_attn_W_O, float* d_grad_attn_b_O,
+    float* d_grad_ffn_W1, float* d_grad_ffn_b1,
+    float* d_grad_ffn_W2, float* d_grad_ffn_b2,
+    int batch_size,
+    int seq_len
+) {
+    int total_size = batch_size * seq_len * d_model;
+
+    // Allocate temporary gradient buffers
+    float *d_grad_attn_output_total, *d_grad_attn_output_from_res2;
+    float *d_grad_ffn_normed, *d_grad_attn_output_from_ln2;
+    float *d_grad_attn_output_from_attn, *d_grad_attn_normed;
+    float *d_grad_input_from_res1, *d_grad_input_from_ln1;
+    float *d_temp;
+
+    CUDA_CHECK(cudaMalloc(&d_grad_attn_output_total, total_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_attn_output_from_res2, total_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_ffn_normed, total_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_attn_output_from_ln2, total_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_attn_output_from_attn, total_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_attn_normed, total_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_input_from_res1, total_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_input_from_ln1, total_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_temp, total_size * sizeof(float)));
+
+    // ========================================================================
+    // Backward through second residual: output = attn_output + ffn_output
+    // Gradient splits equally to both paths
+    // ========================================================================
+
+    CUDA_CHECK(cudaMemcpy(d_grad_attn_output_from_res2, d_grad_output,
+                         total_size * sizeof(float), cudaMemcpyDeviceToDevice));
+    float *d_grad_ffn_output = d_temp;  // Reuse temp buffer
+    CUDA_CHECK(cudaMemcpy(d_grad_ffn_output, d_grad_output,
+                         total_size * sizeof(float), cudaMemcpyDeviceToDevice));
+
+    // ========================================================================
+    // Backward through FFN
+    // ========================================================================
+
+    ffn->backward_device(
+        d_ffn_normed,         // Input (saved from forward)
+        d_grad_ffn_output,    // Gradient w.r.t. FFN output
+        d_grad_ffn_normed,    // Gradient w.r.t. FFN input (output)
+        d_grad_ffn_W1, d_grad_ffn_b1,
+        d_grad_ffn_W2, d_grad_ffn_b2,
+        batch_size, seq_len
+    );
+
+    // ========================================================================
+    // Backward through second layer norm
+    // ========================================================================
+
+    layer_norm_backward(
+        d_grad_ffn_normed,           // Gradient w.r.t. normalized output
+        d_attn_output,               // Input (saved from forward)
+        d_ln2_gamma,                 // Layer norm gamma
+        d_grad_attn_output_from_ln2, // Gradient w.r.t. input (output)
+        d_grad_ln2_gamma,            // Gradient w.r.t. gamma (output)
+        d_grad_ln2_beta,             // Gradient w.r.t. beta (output)
+        batch_size, seq_len, d_model,
+        1e-5f                        // epsilon
+    );
+
+    // ========================================================================
+    // Accumulate gradients to attn_output from residual and layer norm
+    // ========================================================================
+
+    elementwise_add(d_grad_attn_output_from_res2, d_grad_attn_output_from_ln2,
+                    d_grad_attn_output_total, total_size);
+
+    // ========================================================================
+    // Backward through first residual: attn_output = input + attn_output
+    // Gradient splits to both paths
+    // ========================================================================
+
+    CUDA_CHECK(cudaMemcpy(d_grad_input_from_res1, d_grad_attn_output_total,
+                         total_size * sizeof(float), cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(d_grad_attn_output_from_attn, d_grad_attn_output_total,
+                         total_size * sizeof(float), cudaMemcpyDeviceToDevice));
+
+    // ========================================================================
+    // Backward through attention
+    // ========================================================================
+
+    attention->backward_device_to_device(
+        d_attn_normed,               // Input (saved from forward)
+        d_grad_attn_output_from_attn, // Gradient w.r.t. attention output
+        d_grad_attn_normed,          // Gradient w.r.t. attention input (output)
+        d_grad_attn_W_Q, d_grad_attn_b_Q,
+        d_grad_attn_W_K, d_grad_attn_b_K,
+        d_grad_attn_W_V, d_grad_attn_b_V,
+        d_grad_attn_W_O, d_grad_attn_b_O,
+        batch_size, seq_len
+    );
+
+    // ========================================================================
+    // Backward through first layer norm
+    // ========================================================================
+
+    layer_norm_backward(
+        d_grad_attn_normed,     // Gradient w.r.t. normalized output
+        d_input,                // Input (from forward)
+        d_ln1_gamma,            // Layer norm gamma
+        d_grad_input_from_ln1,  // Gradient w.r.t. input (output)
+        d_grad_ln1_gamma,       // Gradient w.r.t. gamma (output)
+        d_grad_ln1_beta,        // Gradient w.r.t. beta (output)
+        batch_size, seq_len, d_model,
+        1e-5f                   // epsilon
+    );
+
+    // ========================================================================
+    // Accumulate final gradient to input from both residual paths
+    // ========================================================================
+
+    elementwise_add(d_grad_input_from_res1, d_grad_input_from_ln1,
+                    d_grad_input, total_size);
+
+    // Free temporary buffers
+    CUDA_CHECK(cudaFree(d_grad_attn_output_total));
+    CUDA_CHECK(cudaFree(d_grad_attn_output_from_res2));
+    CUDA_CHECK(cudaFree(d_grad_ffn_normed));
+    CUDA_CHECK(cudaFree(d_grad_attn_output_from_ln2));
+    CUDA_CHECK(cudaFree(d_grad_attn_output_from_attn));
+    CUDA_CHECK(cudaFree(d_grad_attn_normed));
+    CUDA_CHECK(cudaFree(d_grad_input_from_res1));
+    CUDA_CHECK(cudaFree(d_grad_input_from_ln1));
+    CUDA_CHECK(cudaFree(d_temp));
+}

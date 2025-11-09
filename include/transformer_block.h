@@ -96,6 +96,23 @@ public:
         int seq_len
     );
 
+    // Backward pass
+    void backward_device(
+        const float* d_input,        // Input from forward pass [B, N, d_model]
+        const float* d_grad_output,  // Gradient w.r.t. output [B, N, d_model]
+        float* d_grad_input,         // Gradient w.r.t. input [B, N, d_model]
+        float* d_grad_ln1_gamma, float* d_grad_ln1_beta,
+        float* d_grad_ln2_gamma, float* d_grad_ln2_beta,
+        float* d_grad_attn_W_Q, float* d_grad_attn_b_Q,
+        float* d_grad_attn_W_K, float* d_grad_attn_b_K,
+        float* d_grad_attn_W_V, float* d_grad_attn_b_V,
+        float* d_grad_attn_W_O, float* d_grad_attn_b_O,
+        float* d_grad_ffn_W1, float* d_grad_ffn_b1,
+        float* d_grad_ffn_W2, float* d_grad_ffn_b2,
+        int batch_size,
+        int seq_len
+    );
+
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);
 
