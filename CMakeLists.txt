@@ -11,7 +11,8 @@ find_package(CUDA REQUIRED)
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # CUDA compilation flags
-set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_60")
+#set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -arch=sm_60")
+set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
 
 # Library: MLP CUDA
 add_library(mlp_cuda STATIC
