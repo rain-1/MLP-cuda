@@ -1,7 +1,9 @@
 #include "gradient_utils.h"
 #include "matrix_ops.h"  // For CUDA_CHECK macro
+#include <cuda_runtime.h>
 #include <cmath>
 #include <float.h>
+#include <stdio.h>
 
 // Kernel to compute squared L2 norm
 __global__ void squared_norm_kernel(
