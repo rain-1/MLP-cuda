@@ -84,8 +84,15 @@ public:
         const int* h_targets,      // [batch_size, seq_len]
         int batch_size,
         int seq_len,
-        float learning_rate
+        float learning_rate,
+        float grad_clip_norm = -1.0f  // Gradient clipping threshold (-1 = no clipping)
     );
+
+    // Clip all gradients by global norm
+    void clip_all_gradients(float max_norm);
+
+    // Compute total gradient norm across all parameters
+    float compute_gradient_norm();
 
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);

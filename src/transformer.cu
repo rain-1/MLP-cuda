@@ -4,6 +4,7 @@
 #include "matrix_ops.h"
 #include "loss.h"
 #include "adam.h"
+#include "gradient_utils.h"
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <curand_kernel.h>
@@ -1064,7 +1065,8 @@ float Transformer::train_step(
     const int* h_targets,
     int batch_size,
     int seq_len,
-    float learning_rate
+    float learning_rate,
+    float grad_clip_norm
 ) {
     // Copy inputs to device
     int* d_token_ids_train;
@@ -1088,6 +1090,11 @@ float Transformer::train_step(
 
     // Backward pass
     backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
+
+    // Gradient clipping
+    if (grad_clip_norm > 0.0f) {
+        clip_all_gradients(grad_clip_norm);
+    }
 
     // ========================================================================
     // Apply Adam optimizer updates
@@ -1222,4 +1229,124 @@ float Transformer::train_step(
     CUDA_CHECK(cudaFree(d_targets_train));
 
     return loss;
+}
+
+float Transformer::compute_gradient_norm() {
+    // Compute total gradient norm across all parameters
+    float total_norm_sq = 0.0f;
+
+    // Embeddings and output
+    float norm = gradient_norm(d_grad_token_embeddings, vocab_size * d_model);
+    total_norm_sq += norm * norm;
+
+    norm = gradient_norm(d_grad_position_embeddings, max_seq_len * d_model);
+    total_norm_sq += norm * norm;
+
+    norm = gradient_norm(d_grad_output_weights, d_model * vocab_size);
+    total_norm_sq += norm * norm;
+
+    norm = gradient_norm(d_grad_output_bias, vocab_size);
+    total_norm_sq += norm * norm;
+
+    norm = gradient_norm(d_grad_ln_final_gamma, d_model);
+    total_norm_sq += norm * norm;
+
+    norm = gradient_norm(d_grad_ln_final_beta, d_model);
+    total_norm_sq += norm * norm;
+
+    // Block gradients
+    for (int i = 0; i < num_layers; i++) {
+        auto& grads = block_grads[i];
+
+        norm = gradient_norm(grads.d_grad_ln1_gamma, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_ln1_beta, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_ln2_gamma, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_ln2_beta, d_model);
+        total_norm_sq += norm * norm;
+
+        // Attention
+        norm = gradient_norm(grads.d_grad_attn_W_Q, d_model * d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_attn_b_Q, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_attn_W_K, d_model * d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_attn_b_K, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_attn_W_V, d_model * d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_attn_b_V, d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_attn_W_O, d_model * d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_attn_b_O, d_model);
+        total_norm_sq += norm * norm;
+
+        // FFN
+        norm = gradient_norm(grads.d_grad_ffn_W1, d_ff * d_model);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_ffn_b1, d_ff);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_ffn_W2, d_model * d_ff);
+        total_norm_sq += norm * norm;
+
+        norm = gradient_norm(grads.d_grad_ffn_b2, d_model);
+        total_norm_sq += norm * norm;
+    }
+
+    return sqrtf(total_norm_sq);
+}
+
+void Transformer::clip_all_gradients(float max_norm) {
+    float total_norm = compute_gradient_norm();
+
+    if (total_norm > max_norm) {
+        float scale = max_norm / total_norm;
+
+        // Scale all gradients
+        clip_gradients(d_grad_token_embeddings, vocab_size * d_model, max_norm);
+        clip_gradients(d_grad_position_embeddings, max_seq_len * d_model, max_norm);
+        clip_gradients(d_grad_output_weights, d_model * vocab_size, max_norm);
+        clip_gradients(d_grad_output_bias, vocab_size, max_norm);
+        clip_gradients(d_grad_ln_final_gamma, d_model, max_norm);
+        clip_gradients(d_grad_ln_final_beta, d_model, max_norm);
+
+        for (int i = 0; i < num_layers; i++) {
+            auto& grads = block_grads[i];
+
+            clip_gradients(grads.d_grad_ln1_gamma, d_model, max_norm);
+            clip_gradients(grads.d_grad_ln1_beta, d_model, max_norm);
+            clip_gradients(grads.d_grad_ln2_gamma, d_model, max_norm);
+            clip_gradients(grads.d_grad_ln2_beta, d_model, max_norm);
+
+            clip_gradients(grads.d_grad_attn_W_Q, d_model * d_model, max_norm);
+            clip_gradients(grads.d_grad_attn_b_Q, d_model, max_norm);
+            clip_gradients(grads.d_grad_attn_W_K, d_model * d_model, max_norm);
+            clip_gradients(grads.d_grad_attn_b_K, d_model, max_norm);
+            clip_gradients(grads.d_grad_attn_W_V, d_model * d_model, max_norm);
+            clip_gradients(grads.d_grad_attn_b_V, d_model, max_norm);
+            clip_gradients(grads.d_grad_attn_W_O, d_model * d_model, max_norm);
+            clip_gradients(grads.d_grad_attn_b_O, d_model, max_norm);
+
+            clip_gradients(grads.d_grad_ffn_W1, d_ff * d_model, max_norm);
+            clip_gradients(grads.d_grad_ffn_b1, d_ff, max_norm);
+            clip_gradients(grads.d_grad_ffn_W2, d_model * d_ff, max_norm);
+            clip_gradients(grads.d_grad_ffn_b2, d_model, max_norm);
+        }
+    }
 }

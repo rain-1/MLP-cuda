@@ -26,6 +26,7 @@ add_library(mlp_cuda STATIC
     src/transformer_layers.cu
     src/transformer_block.cu
     src/transformer.cu
+    src/gradient_utils.cu
     src/tokenizer.cpp
     src/word_tokenizer.cpp
 )
