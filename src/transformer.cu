@@ -1,4 +1,5 @@
 #include "transformer.h"
+#include "transformer_block.h"
 #include "transformer_layers.h"
 #include "matrix_ops.h"
 #include "loss.h"
@@ -28,19 +29,6 @@ __global__ void add_position_embeddings_kernel(
     if (batch < B && seq < N && dim < d_model) {
         int idx = batch * N * d_model + seq * d_model + dim;
         output[idx] = token_emb[idx] + pos_emb[seq * d_model + dim];
-    }
-}
-
-// Apply residual connection
-__global__ void add_residual_kernel(
-    const float* input,
-    const float* residual,
-    float* output,
-    int size
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size) {
-        output[idx] = input[idx] + residual[idx];
     }
 }
 
