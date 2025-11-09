@@ -10,13 +10,48 @@
 #include <time.h>
 
 struct TrainingConfig {
-    float learning_rate = 1e-4f;  // Lowered from 1e-3 for stability
-    float grad_clip_norm = 1.0f;   // Gradient clipping threshold
+    // Learning rate schedule
+    float learning_rate_max = 3e-4f;    // Peak learning rate after warmup
+    float learning_rate_min = 3e-5f;    // Minimum learning rate (10% of max)
+    int warmup_steps = 100;              // Linear warmup steps
+    bool use_cosine_schedule = true;     // Use cosine annealing vs constant LR
+
+    // Training parameters
+    float grad_clip_norm = 1.0f;         // Gradient clipping threshold
     int num_epochs = 10;
-    bool monitor_grads = true;      // Monitor gradient norms
-    bool check_nans = true;         // Check for NaN/Inf
-    int log_interval = 10;          // Log every N batches
+    bool monitor_grads = true;           // Monitor gradient norms
+    bool check_nans = true;              // Check for NaN/Inf
+    int log_interval = 10;               // Log every N batches
 };
+
+// Compute learning rate with cosine schedule and linear warmup
+inline float compute_learning_rate(
+    int step,
+    int total_steps,
+    const TrainingConfig& config
+) {
+    if (!config.use_cosine_schedule) {
+        return config.learning_rate_max;
+    }
+
+    // Linear warmup
+    if (step < config.warmup_steps) {
+        return config.learning_rate_max * (float)step / (float)config.warmup_steps;
+    }
+
+    // Cosine annealing after warmup
+    int decay_steps = total_steps - config.warmup_steps;
+    int current_step = step - config.warmup_steps;
+
+    float progress = (float)current_step / (float)decay_steps;
+    progress = fminf(progress, 1.0f);  // Clamp to [0, 1]
+
+    float cosine_decay = 0.5f * (1.0f + cosf(3.14159265359f * progress));
+    float lr = config.learning_rate_min +
+               (config.learning_rate_max - config.learning_rate_min) * cosine_decay;
+
+    return lr;
+}
 
 template<typename TokenizerType>
 int run_training(
@@ -72,6 +107,9 @@ int run_training(
     printf("     - FFN dimension: %d\n", d_ff);
     printf("     - Max sequence length: %d\n\n", max_seq_len);
 
+    // Calculate total training steps for LR schedule
+    int total_steps = num_batches * config.num_epochs;
+
     // Initialize wandb logger
     WandbLogger wandb_logger("training_metrics.jsonl");
     wandb_logger.set_enabled(use_wandb);
@@ -93,15 +131,30 @@ int run_training(
         wandb_config["seq_len"] = seq_len;
         wandb_config["batch_size"] = batch_size;
         wandb_config["num_epochs"] = config.num_epochs;
-        wandb_config["learning_rate"] = config.learning_rate;
+        wandb_config["learning_rate_max"] = config.learning_rate_max;
+        wandb_config["learning_rate_min"] = config.learning_rate_min;
+        wandb_config["warmup_steps"] = config.warmup_steps;
+        wandb_config["use_cosine_schedule"] = config.use_cosine_schedule ? 1.0 : 0.0;
         wandb_config["grad_clip_norm"] = config.grad_clip_norm;
+        wandb_config["total_steps"] = total_steps;
         wandb_logger.log_config_num(wandb_config);
     }
 
     // 4. Train the model
     printf("4. Training transformer...\n");
-    printf("   Training for %d epochs with batch size %d\n", config.num_epochs, batch_size);
-    printf("   Learning rate: %.4e (10x lower for stability)\n", config.learning_rate);
+    printf("   Training for %d epochs with batch size %d (%d total steps)\n",
+           config.num_epochs, batch_size, total_steps);
+
+    if (config.use_cosine_schedule) {
+        printf("   Learning rate schedule: COSINE with warmup\n");
+        printf("     - Warmup steps: %d (%.1f%% of training)\n",
+               config.warmup_steps, 100.0f * config.warmup_steps / total_steps);
+        printf("     - Max LR: %.4e (after warmup)\n", config.learning_rate_max);
+        printf("     - Min LR: %.4e (end of training)\n", config.learning_rate_min);
+    } else {
+        printf("   Learning rate: %.4e (constant)\n", config.learning_rate_max);
+    }
+
     printf("   Gradient clipping: %.2f\n", config.grad_clip_norm);
     printf("   Monitoring: grads=%s, NaNs=%s\n\n",
            config.monitor_grads ? "yes" : "no",
@@ -132,21 +185,27 @@ int run_training(
                 break;
             }
 
+            // Compute learning rate for this step
+            int global_step = epoch * num_batches + batch_idx;
+            float current_lr = compute_learning_rate(global_step, total_steps, config);
+
             // Training step: forward + backward + gradient clipping + optimizer update
             float loss = model.train_step(inputs.data(), targets.data(),
                                          batch_size, seq_len,
-                                         config.learning_rate, config.grad_clip_norm);
+                                         current_lr, config.grad_clip_norm);
 
             // Check for NaN/Inf in loss
             if (config.check_nans && (isnan(loss) || isinf(loss))) {
                 printf("\n\n   *** TRAINING DIVERGED: Loss is %s at epoch %d, batch %d ***\n",
                        isnan(loss) ? "NaN" : "Inf", epoch + 1, batch_idx + 1);
+                printf("   Current LR: %.4e (step %d/%d)\n", current_lr, global_step, total_steps);
                 printf("   This usually indicates:\n");
                 printf("     1. Learning rate too high\n");
                 printf("     2. Gradient explosion\n");
                 printf("     3. Numerical instability in loss computation\n");
                 printf("   Try:\n");
-                printf("     - Lower learning rate (current: %.4e)\n", config.learning_rate);
+                printf("     - Lower max learning rate (current: %.4e)\n", config.learning_rate_max);
+                printf("     - More warmup steps (current: %d)\n", config.warmup_steps);
                 printf("     - Tighter gradient clipping (current: %.2f)\n", config.grad_clip_norm);
                 printf("     - Check your data for issues\n\n");
                 training_diverged = true;
@@ -199,21 +258,29 @@ int run_training(
 
             // Log to wandb
             if (use_wandb) {
-                int global_step = epoch * num_batches + batch_idx;
                 wandb_logger.set_step(global_step);
 
                 std::map<std::string, double> metrics;
                 metrics["train/loss"] = loss;
-                metrics["train/learning_rate"] = config.learning_rate;
+                metrics["train/learning_rate"] = current_lr;
                 metrics["train/epoch"] = epoch + 1;
                 wandb_logger.log_metrics(metrics);
             }
 
             // Print progress
             if ((batch_idx + 1) % config.log_interval == 0 || batch_idx == num_batches - 1) {
-                if (config.monitor_grads) {
+                // Show LR during warmup and occasionally after
+                bool show_lr = (global_step < config.warmup_steps) || (batch_idx % 50 == 0);
+
+                if (config.monitor_grads && show_lr) {
+                    printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f, LR: %.2e, GradNorm: %.2f   ",
+                           epoch + 1, config.num_epochs, batch_idx + 1, num_batches, loss, current_lr, max_grad_norm);
+                } else if (config.monitor_grads) {
                     printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f, GradNorm: %.2f   ",
                            epoch + 1, config.num_epochs, batch_idx + 1, num_batches, loss, max_grad_norm);
+                } else if (show_lr) {
+                    printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f, LR: %.2e   ",
+                           epoch + 1, config.num_epochs, batch_idx + 1, num_batches, loss, current_lr);
                 } else {
                     printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f   ",
                            epoch + 1, config.num_epochs, batch_idx + 1, num_batches, loss);
@@ -286,8 +353,12 @@ int run_training(
     if (training_diverged) {
         printf("Training diverged - model not saved.\n");
         printf("Please try again with:\n");
-        printf("  - Lower learning rate (--lr %.4e)\n", config.learning_rate / 10.0f);
-        printf("  - Tighter clipping (--grad-clip %.2f)\n\n", config.grad_clip_norm / 2.0f);
+        printf("  - Lower max learning rate (current: %.4e, try: %.4e)\n",
+               config.learning_rate_max, config.learning_rate_max / 3.0f);
+        printf("  - More warmup (current: %d steps, try: %d steps)\n",
+               config.warmup_steps, config.warmup_steps * 2);
+        printf("  - Tighter clipping (current: %.2f, try: %.2f)\n\n",
+               config.grad_clip_norm, config.grad_clip_norm / 2.0f);
         return 1;
     }
 
