@@ -194,8 +194,6 @@ __global__ void lm_cross_entropy_loss_kernel(
         float m = (mask != nullptr) ? mask[idx] : 1.0f;
 
         if (m > 0.0f) {
-            int batch = idx / seq_len;
-            int pos = idx % seq_len;
             int target = targets[idx];
 
             if (target >= 0 && target < vocab_size) {
