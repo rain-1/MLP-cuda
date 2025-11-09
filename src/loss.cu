@@ -373,6 +373,14 @@ void lm_cross_entropy_gradient(
     dim3 gridSize(total_positions);
     dim3 blockSize(vocab_size);
 
+    // DEBUG: Print launch config to verify we're using old implementation
+    static bool printed = false;
+    if (!printed) {
+        printf("[DEBUG loss.cu] Using OLD gradient kernel: grid=%d, block=%d (vocab_size=%d)\n",
+               total_positions, vocab_size, vocab_size);
+        printed = true;
+    }
+
     lm_cross_entropy_gradient_kernel<<<gridSize, blockSize>>>(
         d_logits, d_targets, d_mask, d_grad,
         batch_size, seq_len, vocab_size, scale

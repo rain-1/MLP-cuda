@@ -56,6 +56,13 @@ bool check_lm_loss_gradient() {
     lm_cross_entropy_gradient(d_logits, d_targets, d_grad, batch_size, seq_len, vocab_size, nullptr);
     CUDA_CHECK(cudaMemcpy(h_grad_analytical, d_grad, total_logits * sizeof(float), cudaMemcpyDeviceToHost));
 
+    // DEBUG: Print sample gradients to verify they're different from before
+    printf("DEBUG: Sample analytical gradients at indices [0, 10, 20]:\n");
+    printf("  grad[0] = %.6f\n", h_grad_analytical[0]);
+    printf("  grad[10] = %.6f\n", h_grad_analytical[10]);
+    printf("  grad[20] = %.6f\n", h_grad_analytical[20]);
+    printf("\n");
+
     // Compute numerical gradient using finite differences
     printf("Computing numerical gradients (this may take a moment)...\n");
 
