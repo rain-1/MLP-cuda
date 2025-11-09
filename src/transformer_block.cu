@@ -16,9 +16,11 @@ FeedForwardNetwork::FeedForwardNetwork(
     int d_model,
     int d_ff,
     int max_batch_size,
-    int max_seq_len
+    int max_seq_len,
+    float init_scale
 ) : d_model(d_model), d_ff(d_ff),
-    max_batch_size(max_batch_size), max_seq_len(max_seq_len)
+    max_batch_size(max_batch_size), max_seq_len(max_seq_len),
+    init_scale(init_scale)
 {
     allocate_memory();
     initialize_parameters();
@@ -56,7 +58,9 @@ void FeedForwardNetwork::initialize_parameters() {
     curandGenerateNormal(gen, d_W1, d_model * d_ff, 0.0f, std1);
     CUDA_CHECK(cudaMemset(d_b1, 0, d_ff * sizeof(float)));
 
-    float std2 = sqrtf(2.0f / (d_ff + d_model));
+    // W2 initialization with depth scaling (GPT-2/3 style)
+    // Scale by init_scale to account for residual path accumulation
+    float std2 = sqrtf(2.0f / (d_ff + d_model)) * init_scale;
     curandGenerateNormal(gen, d_W2, d_ff * d_model, 0.0f, std2);
     CUDA_CHECK(cudaMemset(d_b2, 0, d_model * sizeof(float)));
 
@@ -210,8 +214,9 @@ TransformerBlock::TransformerBlock(
     max_batch_size(max_batch_size), max_seq_len(max_seq_len),
     residual_scale(residual_scale)
 {
-    attention = new MultiHeadAttention(d_model, num_heads, max_seq_len, max_batch_size);
-    ffn = new FeedForwardNetwork(d_model, d_ff, max_batch_size, max_seq_len);
+    // GPT-2/3 style: residual_scale already accounts for depth, use it for init scaling
+    attention = new MultiHeadAttention(d_model, num_heads, max_seq_len, max_batch_size, residual_scale);
+    ffn = new FeedForwardNetwork(d_model, d_ff, max_batch_size, max_seq_len, residual_scale);
 
     allocate_memory();
     initialize_parameters();

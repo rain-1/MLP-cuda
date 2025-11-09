@@ -11,11 +11,13 @@ MultiHeadAttention::MultiHeadAttention(
     int d_model,
     int num_heads,
     int max_seq_len,
-    int max_batch_size
+    int max_batch_size,
+    float init_scale
 ) : d_model(d_model),
     num_heads(num_heads),
     max_seq_len(max_seq_len),
-    max_batch_size(max_batch_size)
+    max_batch_size(max_batch_size),
+    init_scale(init_scale)
 {
     // Check that d_model is divisible by num_heads
     if (d_model % num_heads != 0) {
@@ -92,7 +94,11 @@ void MultiHeadAttention::initialize_parameters() {
     curandGenerateNormal(gen, d_W_Q, d_model * d_model, 0.0f, std);
     curandGenerateNormal(gen, d_W_K, d_model * d_model, 0.0f, std);
     curandGenerateNormal(gen, d_W_V, d_model * d_model, 0.0f, std);
-    curandGenerateNormal(gen, d_W_O, d_model * d_model, 0.0f, std);
+
+    // W_O initialization with depth scaling (GPT-2/3 style)
+    // Scale by init_scale to account for residual path accumulation
+    float std_o = std * init_scale;
+    curandGenerateNormal(gen, d_W_O, d_model * d_model, 0.0f, std_o);
 
     // Initialize biases to zero
     CUDA_CHECK(cudaMemset(d_b_Q, 0, d_model * sizeof(float)));

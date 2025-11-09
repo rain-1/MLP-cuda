@@ -24,7 +24,8 @@ public:
         int d_model,
         int d_ff,
         int max_batch_size,
-        int max_seq_len
+        int max_seq_len,
+        float init_scale = 1.0f  // Scale for W2 initialization (for residual depth scaling)
     );
 
     ~FeedForwardNetwork();
@@ -60,6 +61,7 @@ private:
     int d_ff;
     int max_batch_size;
     int max_seq_len;
+    float init_scale;  // Scale factor for W2 initialization
 
     // Parameters
     float *d_W1, *d_b1;  // First layer: [d_ff, d_model]

@@ -16,7 +16,8 @@ public:
         int d_model,
         int num_heads,
         int max_seq_len,
-        int max_batch_size
+        int max_batch_size,
+        float init_scale = 1.0f  // Scale for W_O initialization (for residual depth scaling)
     );
 
     // Destructor
@@ -100,6 +101,7 @@ private:
     int d_k, d_v;  // d_k = d_v = d_model / num_heads
     int max_seq_len;
     int max_batch_size;
+    float init_scale;  // Scale factor for W_O initialization
 
     // Device pointers - Parameters
     float *d_W_Q, *d_W_K, *d_W_V, *d_W_O;  // Projection weights
