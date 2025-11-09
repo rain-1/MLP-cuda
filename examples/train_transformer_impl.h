@@ -28,8 +28,8 @@ int run_training(
     // Training hyperparameters
     int batch_size = 8;
     int num_epochs = 10;
-    float base_learning_rate = 1e-4f;  // Reduced from 1e-3 to 1e-4 for stability
-    int warmup_steps = 100;            // Linear warmup for first 100 steps
+    float base_learning_rate = 5e-5f;  // Further reduced from 1e-4 to 5e-5 for better stability
+    int warmup_steps = 200;            // Extended warmup for more gradual learning
     float warmup_init_lr = 1e-6f;      // Start with very small LR
 
     int vocab_size = tokenizer.vocab_size();
@@ -97,7 +97,7 @@ int run_training(
     printf("   Training for %d epochs with batch size %d\n", num_epochs, batch_size);
     printf("   Base learning rate: %.6f (with %d step warmup from %.6f)\n",
            base_learning_rate, warmup_steps, warmup_init_lr);
-    printf("   Gradient clipping enabled: max_norm = 1.0\n\n");
+    printf("   Gradient clipping enabled: max_norm = 1.5\n\n");
 
     time_t start_time = time(nullptr);
 

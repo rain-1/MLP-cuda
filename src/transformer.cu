@@ -1163,8 +1163,8 @@ float Transformer::train_step(
         grad_ptrs.data(), grad_sizes.data(), grad_ptrs.size()
     );
 
-    // Apply gradient clipping
-    const float max_grad_norm = 1.0f;
+    // Apply gradient clipping (relaxed to allow slightly larger gradients)
+    const float max_grad_norm = 1.5f;
     clip_gradients_by_global_norm(
         grad_ptrs.data(), grad_sizes.data(), grad_ptrs.size(), max_grad_norm
     );

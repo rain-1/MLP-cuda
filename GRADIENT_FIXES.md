@@ -15,12 +15,13 @@ Rising loss during training indicated the model was actively getting worse, like
 - `src/gradient_utils.cu` - CUDA implementation with kernels for:
   - Computing L2 norm of gradient tensors
   - Computing global gradient norm across all parameters
-  - Clipping gradients by global norm (max_norm = 1.0)
+  - Clipping gradients by global norm (max_norm = 1.5)
   - Computing parameter norms for monitoring
 
 **Implementation:**
 - Global gradient norm is computed across ALL model parameters
-- If norm exceeds 1.0, all gradients are scaled proportionally
+- If norm exceeds 1.5, all gradients are scaled proportionally
+- Slightly relaxed from 1.0 to allow more gradient signal through
 - This prevents gradient explosion while maintaining gradient direction
 
 ### 2. Enhanced Training Diagnostics
@@ -36,15 +37,17 @@ Rising loss during training indicated the model was actively getting worse, like
 ### 3. Learning Rate Reduction
 
 **Modified: `examples/train_transformer_impl.h`**
-- **Reduced base learning rate: 0.001 → 0.0001** (10x reduction)
+- **Reduced base learning rate: 0.001 → 0.00005 (5e-5)** (20x reduction)
 - This is much safer for transformer training from scratch
+- Further reduced after initial testing showed instability
 
 ### 4. Learning Rate Warmup Schedule
 
 **Modified: `examples/train_transformer_impl.h`**
-- Added linear warmup over first 100 steps
-- Warmup schedule: starts at 1e-6, linearly increases to 1e-4
+- Added linear warmup over first 200 steps (extended from 100)
+- Warmup schedule: starts at 1e-6, linearly increases to 5e-5
 - Prevents early training instability from large gradient updates
+- Longer warmup provides more gradual introduction to full learning rate
 - Formula: `lr = warmup_init_lr + (step/warmup_steps) * (base_lr - warmup_init_lr)`
 
 ### 5. Build System Update
@@ -118,22 +121,28 @@ This is the same approach used by major frameworks (PyTorch's `clip_grad_norm_`,
 
 ### Why These Specific Values?
 
-- **max_norm = 1.0**: Standard for transformer training, prevents explosion
-- **base_lr = 1e-4**: Safe default for Adam optimizer on transformers
-- **warmup_steps = 100**: Enough to stabilize, not too long for small datasets
+- **max_norm = 1.5**: Slightly relaxed from standard 1.0, allows more gradient signal while still preventing explosion
+- **base_lr = 5e-5**: Very conservative for maximum stability (half the typical default)
+- **warmup_steps = 200**: Extended warmup for gradual learning rate increase
 - **warmup_init_lr = 1e-6**: Very conservative start, prevents early spikes
 
 ## Next Steps
 
-If loss still rises:
-1. Try reducing base_lr to 5e-5 or 1e-5
-2. Increase warmup_steps to 200-500
-3. Check the loss gradient kernel implementation
+**Current Configuration (v2 - More Conservative):**
+- base_lr = 5e-5 (reduced from 1e-4)
+- warmup_steps = 200 (increased from 100)
+- max_grad_norm = 1.5 (relaxed from 1.0)
+
+If loss still rises or oscillates excessively:
+1. Try reducing base_lr to 3e-5 or 1e-5
+2. Increase warmup_steps to 300-500
+3. Check the loss gradient kernel implementation (potential bug in recent rewrite)
 4. Verify data preprocessing (tokens, targets alignment)
 
 If loss is decreasing but very slowly:
-1. Try increasing base_lr to 2e-4 or 3e-4
+1. Try increasing base_lr to 7e-5 or 1e-4
 2. Monitor gradient norms - if they're always < 0.3, LR might be too low
+3. Consider reducing warmup_steps back to 100
 
 ## Files Modified Summary
 
