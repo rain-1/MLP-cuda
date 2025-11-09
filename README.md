@@ -1,25 +1,53 @@
 # MLP-CUDA
 
-High-performance batched Multi-Layer Perceptron (MLP) implementation using CUDA, featuring batched inference and training with the Adam optimizer.
+High-performance CUDA implementations of neural network components, featuring:
+- **Batched MLP** with Adam optimizer
+- **Multi-Head Attention** for Transformer architectures
 
 ## Overview
 
-This project implements a 2-hidden-layer MLP (4 layers total) with:
+This project provides GPU-accelerated implementations of fundamental deep learning building blocks:
+
+### 1. Multi-Layer Perceptron (MLP)
+A 2-hidden-layer MLP (4 layers total) with:
 - **Batched forward pass** for efficient inference
 - **Batched backward pass** with automatic differentiation
 - **Adam optimizer** for training
 - **Efficient CUDA kernels** with tiled matrix multiplication
 - **Comprehensive test suite** for correctness verification
 
-### Architecture
-
+**Architecture**:
 ```
 Input Layer (h1) → Hidden Layer 1 (h2) → Hidden Layer 2 (h3) → Output Layer (h4)
                     [ReLU]                  [ReLU]              [Linear]
 ```
 
+### 2. Multi-Head Attention
+Transformer-style attention mechanism with:
+- **Scaled dot-product attention**
+- **Multiple attention heads** for parallel attention
+- **Self-attention** and **cross-attention** support
+- **Efficient batched operations**
+- **Custom CUDA kernels** for reshape/transpose operations
+
+**Architecture**:
+```
+Input [B, N, d_model]
+  ↓
+QKV Projections → [B, N, 3×d_model]
+  ↓
+Reshape to heads → [B, h, N, d_k]
+  ↓
+Scaled Dot-Product Attention → softmax(Q·K^T/√d_k)·V
+  ↓
+Concatenate heads → [B, N, d_model]
+  ↓
+Output Projection → [B, N, d_model]
+```
+
 ## Features
 
+### MLP Features
 - ✅ **Batched Operations**: Process multiple samples simultaneously
 - ✅ **Tiled Matrix Multiplication**: Efficient CUDA implementation with shared memory
 - ✅ **ReLU Activation**: Fast element-wise activation with backward pass
@@ -27,33 +55,52 @@ Input Layer (h1) → Hidden Layer 1 (h2) → Hidden Layer 2 (h3) → Output Laye
 - ✅ **MSE Loss**: Mean Squared Error for regression tasks
 - ✅ **Numerical Stability**: Careful handling of edge cases
 - ✅ **Save/Load**: Persist trained models to disk
-- ✅ **Comprehensive Tests**: Unit and integration tests
+
+### Attention Features
+- ✅ **Multi-Head Attention**: Parallel attention with configurable heads
+- ✅ **Self-Attention**: Query, Key, Value from same input
+- ✅ **Cross-Attention**: Separate Query and Key/Value inputs
+- ✅ **Batched Softmax**: Optimized softmax with shared memory reduction
+- ✅ **Reshape/Transpose Kernels**: Efficient head separation and concatenation
+- ✅ **Variable Sequence Lengths**: Support for different sequence lengths
+
+### Common Features
+- ✅ **Comprehensive Tests**: Unit and integration tests for all components
+- ✅ **Examples**: Working demonstrations for both MLP and Attention
+- ✅ **Documentation**: Mathematical derivations and implementation guides
 
 ## Project Structure
 
 ```
 MLP-cuda/
-├── include/            # Header files
-│   ├── mlp.h          # Main MLP class
-│   ├── matrix_ops.h   # Matrix operations
-│   ├── activations.h  # Activation functions
-│   ├── loss.h         # Loss functions
-│   └── adam.h         # Adam optimizer
-├── src/               # Implementation files
-│   ├── mlp.cu
-│   ├── matrix_ops.cu
-│   ├── activations.cu
-│   ├── loss.cu
-│   └── adam.cu
-├── tests/             # Test suite
-│   ├── test_matrix_ops.cu
-│   └── test_mlp.cu
-├── examples/          # Example programs
-│   └── train_regression.cu
-├── docs/              # Documentation
-│   ├── mathematical_derivation.md
-│   └── cuda_implementation_plan.md
-├── CMakeLists.txt     # Build configuration
+├── include/                       # Header files
+│   ├── mlp.h                     # MLP class
+│   ├── multi_head_attention.h    # Multi-Head Attention class
+│   ├── matrix_ops.h              # Matrix operations
+│   ├── attention_ops.h           # Attention-specific operations
+│   ├── activations.h             # Activation functions
+│   ├── loss.h                    # Loss functions
+│   └── adam.h                    # Adam optimizer
+├── src/                          # Implementation files
+│   ├── mlp.cu                    # MLP implementation
+│   ├── multi_head_attention.cu   # Attention implementation
+│   ├── matrix_ops.cu             # Matrix kernels
+│   ├── attention_ops.cu          # Attention kernels
+│   ├── activations.cu            # Activation kernels
+│   ├── loss.cu                   # Loss kernels
+│   └── adam.cu                   # Adam kernels
+├── tests/                        # Test suite
+│   ├── test_matrix_ops.cu        # Matrix operation tests
+│   ├── test_mlp.cu               # MLP tests
+│   └── test_attention.cu         # Attention tests
+├── examples/                     # Example programs
+│   ├── train_regression.cu       # MLP regression example
+│   └── attention_demo.cu         # Attention demonstration
+├── docs/                         # Documentation
+│   ├── mathematical_derivation.md      # MLP mathematics
+│   ├── cuda_implementation_plan.md     # MLP CUDA plan
+│   └── attention_design.md             # Attention design
+├── CMakeLists.txt               # Build configuration
 └── README.md
 ```
 
@@ -199,6 +246,82 @@ void save_parameters(const char* filename)
 void load_parameters(const char* filename)
 ```
 Save/load model parameters to/from disk.
+
+### MultiHeadAttention Class
+
+#### Constructor
+```cpp
+MultiHeadAttention(
+    int d_model,
+    int num_heads,
+    int max_seq_len,
+    int max_batch_size
+)
+```
+
+**Parameters:**
+- `d_model`: Model dimension (must be divisible by num_heads)
+- `num_heads`: Number of attention heads (e.g., 8)
+- `max_seq_len`: Maximum sequence length
+- `max_batch_size`: Maximum batch size
+
+#### Methods
+
+**forward() - Self-Attention**
+```cpp
+void forward(
+    const float* h_X,
+    float* h_output,
+    int batch_size,
+    int seq_len,
+    const float* h_mask = nullptr
+)
+```
+Performs self-attention where Q = K = V = X.
+- `h_X`: Input on host `[batch_size × seq_len × d_model]`
+- `h_output`: Output buffer on host `[batch_size × seq_len × d_model]`
+- `batch_size`: Actual batch size
+- `seq_len`: Actual sequence length
+- `h_mask`: Optional attention mask (1 = attend, 0 = ignore)
+
+**forward_cross() - Cross-Attention**
+```cpp
+void forward_cross(
+    const float* h_Q,
+    const float* h_KV,
+    float* h_output,
+    int batch_size,
+    int seq_len_q,
+    int seq_len_kv,
+    const float* h_mask = nullptr
+)
+```
+Performs cross-attention with separate query and key/value inputs.
+- `h_Q`: Query input `[batch_size × seq_len_q × d_model]`
+- `h_KV`: Key/Value input `[batch_size × seq_len_kv × d_model]`
+- `h_output`: Output buffer `[batch_size × seq_len_q × d_model]`
+
+**Example Usage:**
+```cpp
+#include "multi_head_attention.h"
+
+int main() {
+    int d_model = 512;
+    int num_heads = 8;
+    int seq_len = 64;
+    int batch_size = 32;
+
+    MultiHeadAttention mha(d_model, num_heads, 128, 64);
+
+    float* input;   // [32, 64, 512]
+    float* output;  // [32, 64, 512]
+
+    // Self-attention
+    mha.forward(input, output, batch_size, seq_len);
+
+    return 0;
+}
+```
 
 ## Performance
 
