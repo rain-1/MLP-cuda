@@ -238,7 +238,7 @@ __global__ void lm_cross_entropy_loss_kernel(
 
 // Language modeling cross-entropy gradient kernel
 // Computes gradient: softmax(logits) - one_hot(target), scaled by mask
-// Supports vocabularies larger than 1024 using grid-stride loop
+// OLD IMPLEMENTATION: Simple but correct (reverted for debugging)
 __global__ void lm_cross_entropy_gradient_kernel(
     const float* logits,
     const int* targets,
@@ -250,69 +250,38 @@ __global__ void lm_cross_entropy_gradient_kernel(
     float scale
 ) {
     int idx = blockIdx.x;  // Position index (batch * seq_len)
+    int v = threadIdx.x;   // Vocabulary index
 
-    if (idx >= batch_size * seq_len) return;
+    if (idx < batch_size * seq_len && v < vocab_size) {
+        // Check if this position is masked
+        float m = (mask != nullptr) ? mask[idx] : 1.0f;
 
-    // Check if this position is masked
-    float m = (mask != nullptr) ? mask[idx] : 1.0f;
+        if (m > 0.0f) {
+            int target = targets[idx];
+            const float* logits_ptr = logits + idx * vocab_size;
+            float* grad_ptr = grad + idx * vocab_size;
 
-    const float* logits_ptr = logits + idx * vocab_size;
-    float* grad_ptr = grad + idx * vocab_size;
-
-    if (m > 0.0f) {
-        int target = targets[idx];
-
-        // Use shared memory for reduction
-        extern __shared__ float sdata[];
-        float* s_max = sdata;
-        float* s_sum = sdata + blockDim.x;
-
-        // Find max logit using reduction
-        float thread_max = -INFINITY;
-        for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
-            thread_max = fmaxf(thread_max, logits_ptr[v]);
-        }
-        s_max[threadIdx.x] = thread_max;
-        __syncthreads();
-
-        // Reduce to find global max
-        for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-            if (threadIdx.x < s) {
-                s_max[threadIdx.x] = fmaxf(s_max[threadIdx.x], s_max[threadIdx.x + s]);
+            // Compute softmax for this position
+            // Every thread computes the full max independently (inefficient but simple)
+            float max_logit = -INFINITY;
+            for (int i = 0; i < vocab_size; i++) {
+                max_logit = fmaxf(max_logit, logits_ptr[i]);
             }
-            __syncthreads();
-        }
-        float max_logit = s_max[0];
-        __syncthreads();
 
-        // Compute sum of exp using reduction
-        float thread_sum = 0.0f;
-        for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
-            thread_sum += expf(logits_ptr[v] - max_logit);
-        }
-        s_sum[threadIdx.x] = thread_sum;
-        __syncthreads();
-
-        // Reduce to find global sum
-        for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-            if (threadIdx.x < s) {
-                s_sum[threadIdx.x] += s_sum[threadIdx.x + s];
+            // Every thread computes the full sum independently
+            float sum_exp = 0.0f;
+            for (int i = 0; i < vocab_size; i++) {
+                sum_exp += expf(logits_ptr[i] - max_logit);
             }
-            __syncthreads();
-        }
-        float sum_exp = s_sum[0];
-        __syncthreads();
 
-        // Compute gradient for all vocabulary items this thread is responsible for
-        for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
+            // Each thread computes gradient for its vocabulary item
             float softmax_v = expf(logits_ptr[v] - max_logit) / sum_exp;
+
+            // Gradient: softmax - one_hot(target)
             float target_indicator = (v == target) ? 1.0f : 0.0f;
             grad_ptr[v] = scale * m * (softmax_v - target_indicator);
-        }
-    } else {
-        // Masked position - zero gradient
-        for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
-            grad_ptr[v] = 0.0f;
+        } else {
+            grad[idx * vocab_size + v] = 0.0f;
         }
     }
 }
@@ -398,15 +367,13 @@ void lm_cross_entropy_gradient(
 
     float scale = (num_valid > 0) ? (1.0f / num_valid) : 0.0f;
 
-    // Launch kernel: one block per position, fixed block size
-    // Use 256 threads per block (safe for all GPUs)
-    // Shared memory: blockSize floats for max reduction + blockSize floats for sum reduction
-    int blockSize = 256;
+    // Launch kernel: one block per position, vocab_size threads per block (OLD IMPLEMENTATION)
+    // NOTE: This limits vocab_size to 1024 (max CUDA block size)
+    // But it's the simple, correct implementation for debugging
     dim3 gridSize(total_positions);
-    dim3 threads(blockSize);
-    size_t sharedMemSize = 2 * blockSize * sizeof(float);
+    dim3 blockSize(vocab_size);
 
-    lm_cross_entropy_gradient_kernel<<<gridSize, threads, sharedMemSize>>>(
+    lm_cross_entropy_gradient_kernel<<<gridSize, blockSize>>>(
         d_logits, d_targets, d_mask, d_grad,
         batch_size, seq_len, vocab_size, scale
     );
