@@ -27,7 +27,7 @@ add_library(mlp_cuda STATIC
     src/transformer_block.cu
     src/transformer.cu
     src/tokenizer.cpp
-    src/text_dataset.cpp
+    src/word_tokenizer.cpp
 )
 
 target_link_libraries(mlp_cuda curand)
@@ -67,6 +67,9 @@ target_link_libraries(transformer_demo mlp_cuda)
 
 add_executable(train_transformer examples/train_transformer.cu)
 target_link_libraries(train_transformer mlp_cuda)
+
+add_executable(analyze_vocab examples/analyze_vocab.cpp)
+target_link_libraries(analyze_vocab mlp_cuda)
 
 # Installation
 install(TARGETS mlp_cuda DESTINATION lib)
