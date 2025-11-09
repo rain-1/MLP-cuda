@@ -253,6 +253,17 @@ int run_training(
                         printf("L%d=%.2f ", i, layer_norms[1 + i]);
                     }
                     printf("out=%.2f\n", layer_norms[num_layers + 1]);
+
+                    // Also show forward activation magnitudes
+                    std::vector<float> act_stats = model.compute_forward_activation_stats();
+                    if (!act_stats.empty()) {
+                        printf("   Forward activation max: ");
+                        printf("emb=%.2f ", act_stats[0]);
+                        for (int i = 0; i < num_layers; i++) {
+                            printf("L%d_a=%.2f L%d_f=%.2f ", i, act_stats[1 + i*2], i, act_stats[1 + i*2 + 1]);
+                        }
+                        printf("ln=%.2f\n", act_stats[1 + num_layers*2]);
+                    }
                 }
             }
 

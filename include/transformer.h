@@ -99,6 +99,10 @@ public:
     // Returns vector of norms: [embeddings, layer0, layer1, ..., output]
     std::vector<float> compute_per_layer_gradient_norms();
 
+    // Monitor forward pass activation statistics
+    // Returns vector of max absolute values: [embeddings, layer0_attn, layer0_ffn, layer1_attn, ...]
+    std::vector<float> compute_forward_activation_stats();
+
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);
 

@@ -226,12 +226,14 @@ void Transformer::initialize_parameters() {
     curandGenerateNormal(gen, d_token_embeddings, vocab_size * d_model, 0.0f, emb_std);
 
     // Position embeddings: use sinusoidal (computed on host)
+    // Scale by sqrt(d_model) to match token embedding magnitude
     float* h_pos_emb = new float[max_seq_len * d_model];
+    float pos_scale = sqrtf((float)d_model);  // Scale sinusoids to match token emb std
     for (int pos = 0; pos < max_seq_len; pos++) {
         for (int i = 0; i < d_model / 2; i++) {
             float angle = (float)pos / powf(10000.0f, 2.0f * i / d_model);
-            h_pos_emb[pos * d_model + 2 * i] = sinf(angle);
-            h_pos_emb[pos * d_model + 2 * i + 1] = cosf(angle);
+            h_pos_emb[pos * d_model + 2 * i] = sinf(angle) / pos_scale;
+            h_pos_emb[pos * d_model + 2 * i + 1] = cosf(angle) / pos_scale;
         }
     }
     CUDA_CHECK(cudaMemcpy(d_position_embeddings, h_pos_emb,
@@ -1440,4 +1442,34 @@ std::vector<float> Transformer::compute_per_layer_gradient_norms() {
     layer_norms.push_back(sqrtf(out_norm_sq));
 
     return layer_norms;
+}
+
+std::vector<float> Transformer::compute_forward_activation_stats() {
+    std::vector<float> max_vals;
+
+    // Note: This function should be called after a forward pass
+    // to get meaningful statistics on the activations
+
+    // 1. Embeddings (after adding token + position embeddings)
+    TensorStats emb_stats = compute_tensor_stats(d_embeddings, max_batch_size * max_seq_len * d_model);
+    max_vals.push_back(fabsf(emb_stats.max) > fabsf(emb_stats.min) ? fabsf(emb_stats.max) : fabsf(emb_stats.min));
+
+    // 2. Per-layer activations
+    for (int i = 0; i < num_layers; i++) {
+        auto& block = blocks[i];
+
+        // Attention output (after residual)
+        TensorStats attn_stats = compute_tensor_stats(block->d_attn_output, max_batch_size * max_seq_len * d_model);
+        max_vals.push_back(fabsf(attn_stats.max) > fabsf(attn_stats.min) ? fabsf(attn_stats.max) : fabsf(attn_stats.min));
+
+        // FFN output (block output, after second residual)
+        TensorStats ffn_stats = compute_tensor_stats(block->d_ffn_output, max_batch_size * max_seq_len * d_model);
+        max_vals.push_back(fabsf(ffn_stats.max) > fabsf(ffn_stats.min) ? fabsf(ffn_stats.max) : fabsf(ffn_stats.min));
+    }
+
+    // 3. Final layer norm output
+    TensorStats ln_stats = compute_tensor_stats(d_normed, max_batch_size * max_seq_len * d_model);
+    max_vals.push_back(fabsf(ln_stats.max) > fabsf(ln_stats.min) ? fabsf(ln_stats.max) : fabsf(ln_stats.min));
+
+    return max_vals;
 }
