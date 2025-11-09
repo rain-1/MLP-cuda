@@ -251,3 +251,51 @@ void scale_matrix(float* d_A, float scale, int size) {
     scale_matrix_kernel<<<gridSize, blockSize>>>(d_A, scale, size);
     CUDA_CHECK(cudaGetLastError());
 }
+
+// Backward passes
+
+void matmul_transB_backward(
+    const float* d_grad_C,
+    const float* d_A,
+    const float* d_B,
+    float* d_grad_A,
+    float* d_grad_B,
+    int M, int K, int N
+) {
+    // C = A * B^T where A is [M x K], B is [N x K], C is [M x N]
+    // grad_A = grad_C * B  (shape: [M x N] * [N x K] = [M x K])
+    // grad_B = grad_C^T * A (shape: [N x M] * [M x K] = [N x K])
+
+    if (d_grad_A != nullptr) {
+        // grad_A = grad_C * B
+        matmul(d_grad_C, d_B, d_grad_A, M, N, K);
+    }
+
+    if (d_grad_B != nullptr) {
+        // grad_B = grad_C^T * A
+        matmul_transA(d_grad_C, d_A, d_grad_B, N, M, K);
+    }
+}
+
+void matmul_backward(
+    const float* d_grad_C,
+    const float* d_A,
+    const float* d_B,
+    float* d_grad_A,
+    float* d_grad_B,
+    int M, int K, int N
+) {
+    // C = A * B where A is [M x K], B is [K x N], C is [M x N]
+    // grad_A = grad_C * B^T (shape: [M x N] * [N x K] = [M x K])
+    // grad_B = A^T * grad_C (shape: [K x M] * [M x N] = [K x N])
+
+    if (d_grad_A != nullptr) {
+        // grad_A = grad_C * B^T
+        matmul_transB(d_grad_C, d_B, d_grad_A, M, N, K);
+    }
+
+    if (d_grad_B != nullptr) {
+        // grad_B = A^T * grad_C
+        matmul_transA(d_A, d_grad_C, d_grad_B, K, M, N);
+    }
+}

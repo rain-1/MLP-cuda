@@ -31,6 +31,34 @@ void sum_rows(const float* d_input, float* d_output, int B, int N);
 void elementwise_multiply(const float* d_A, const float* d_B, float* d_C, int size);
 void scale_matrix(float* d_A, float scale, int size);
 
+// Backward passes for training
+
+// Backward for matmul_transB: C = A * B^T
+// Given grad_C [M x N], compute grad_A [M x K] and grad_B [N x K]
+// grad_A = grad_C * B
+// grad_B = grad_C^T * A
+void matmul_transB_backward(
+    const float* d_grad_C,  // [M x N]
+    const float* d_A,       // [M x K]
+    const float* d_B,       // [N x K]
+    float* d_grad_A,        // [M x K] - can be nullptr if not needed
+    float* d_grad_B,        // [N x K] - can be nullptr if not needed
+    int M, int K, int N
+);
+
+// Backward for matmul: C = A * B
+// Given grad_C [M x N], compute grad_A [M x K] and grad_B [K x N]
+// grad_A = grad_C * B^T
+// grad_B = A^T * grad_C
+void matmul_backward(
+    const float* d_grad_C,  // [M x N]
+    const float* d_A,       // [M x K]
+    const float* d_B,       // [K x N]
+    float* d_grad_A,        // [M x K] - can be nullptr if not needed
+    float* d_grad_B,        // [K x N] - can be nullptr if not needed
+    int M, int K, int N
+);
+
 // Utility functions for error checking
 #define CUDA_CHECK(call) \
     do { \
