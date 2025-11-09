@@ -132,6 +132,25 @@ int run_training(
                 learning_rate = base_learning_rate;
             }
 
+            // DEBUG: Print first batch on first epoch to verify data alignment
+            if (epoch == 0 && batch_idx == 0) {
+                printf("\n   [DEBUG] First batch data (verifying input/target alignment):\n");
+                printf("   Sample sequence from batch:\n");
+                printf("     Inputs:  [");
+                for (int i = 0; i < std::min(10, seq_len); i++) {
+                    printf("%d%s", inputs[i], i < std::min(10, seq_len)-1 ? ", " : "");
+                }
+                printf("...]\n");
+                printf("     Targets: [");
+                for (int i = 0; i < std::min(10, seq_len); i++) {
+                    printf("%d%s", targets[i], i < std::min(10, seq_len)-1 ? ", " : "");
+                }
+                printf("...]\n");
+                printf("   Expected: targets[i] should equal inputs[i+1]\n");
+                printf("   Verification: targets[0]=%d should equal inputs[1]=%d -> %s\n\n",
+                       targets[0], inputs[1], targets[0] == inputs[1] ? "OK" : "MISMATCH!");
+            }
+
             // Training step: forward + backward + optimizer update
             float loss = model.train_step(inputs.data(), targets.data(),
                                          batch_size, seq_len, learning_rate);
