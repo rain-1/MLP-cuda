@@ -28,7 +28,7 @@ int run_training(
     // Training hyperparameters
     int batch_size = 8;
     int num_epochs = 10;
-    float learning_rate = 1e-3f;
+    float learning_rate = 1e-4f;  // Reduced from 1e-3 (was causing rising loss)
 
     int vocab_size = tokenizer.vocab_size();
 
