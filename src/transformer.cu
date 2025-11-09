@@ -126,13 +126,16 @@ Transformer::Transformer(
     max_batch_size(max_batch_size), training_step(0)
 {
     // Auto-compute residual scale if not specified
+    // Use more aggressive scaling to prevent forward activation explosion
     if (residual_scale < 0.0f) {
-        this->residual_scale = 1.0f / sqrtf((float)num_layers);
+        // Use 1 / (2 * num_layers) for stronger dampening
+        // For 4 layers: 0.125 instead of 0.5
+        this->residual_scale = 1.0f / (2.0f * num_layers);
     } else {
         this->residual_scale = residual_scale;
     }
 
-    printf("Transformer: Using residual_scale = %.4f (num_layers=%d)\n",
+    printf("Transformer: Using residual_scale = %.4f (num_layers=%d, formula: 1/(2*layers))\n",
            this->residual_scale, num_layers);
 
     allocate_memory();

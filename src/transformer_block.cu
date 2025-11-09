@@ -278,7 +278,9 @@ void TransformerBlock::forward_device(
     attention->forward_device_to_device(d_attn_normed, d_attn_output,
                                        batch_size, seq_len, d_mask);
 
-    // 3. Add residual connection: attn_output = input + residual_scale * attn_output
+    // 3. Scale attention output and add residual connection
+    // output = input + residual_scale * attn_output
+    // Attention outputs can be large, so we scale them down before residual
     int total_size = batch_size * seq_len * d_model;
     add_residual(d_input, d_attn_output, d_attn_output, total_size, residual_scale);
 
@@ -289,7 +291,8 @@ void TransformerBlock::forward_device(
     // 5. Feed-forward network
     ffn->forward_device(d_ffn_normed, d_ffn_output, batch_size, seq_len);
 
-    // 6. Add residual connection: output = attn_output + residual_scale * ffn_output
+    // 6. Scale FFN output and add residual connection
+    // output = attn_output + residual_scale * ffn_output
     add_residual(d_attn_output, d_ffn_output, d_output, total_size, residual_scale);
 }
 
