@@ -39,7 +39,7 @@ int main() {
 
     tokenizer.build_vocab(training_text);
 
-    TextDataset dataset(tokenizer, 10, 2);  // seq_len=10, batch_size=2
+    TextDataset<Tokenizer> dataset(tokenizer, 10, 2);  // seq_len=10, batch_size=2
     dataset.load_from_text(training_text);
 
     std::cout << "Number of batches: " << dataset.get_num_batches() << "\n";
