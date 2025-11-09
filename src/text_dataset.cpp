@@ -29,21 +29,63 @@ void TextDataset::load_from_file(const char* filename) {
 
 void TextDataset::load_from_text(const std::string& text) {
     // Encode the text
-    tokens = tokenizer.encode(text);
+    std::vector<int> all_tokens = tokenizer.encode(text);
+
+    // Split into documents at EOS tokens and create sequences
+    // that don't cross document boundaries
+    tokens.clear();
+
+    int eos_id = tokenizer.eos_token();
+    std::vector<int> current_doc;
+    int total_sequences = 0;
+
+    auto process_document = [&](const std::vector<int>& doc) {
+        // For each document, extract all possible sequences of length (seq_len + 1)
+        if (doc.size() >= seq_len + 1) {
+            int num_seqs = doc.size() - seq_len;
+            for (int i = 0; i < num_seqs; i++) {
+                // Add this sequence to our token pool
+                for (int j = 0; j < seq_len + 1; j++) {
+                    tokens.push_back(doc[i + j]);
+                }
+                total_sequences++;
+            }
+        }
+    };
+
+    // Process tokens, splitting at EOS boundaries
+    for (size_t i = 0; i < all_tokens.size(); i++) {
+        if (all_tokens[i] == eos_id) {
+            // Add EOS to current document
+            current_doc.push_back(all_tokens[i]);
+
+            // Process this document
+            process_document(current_doc);
+
+            // Start new document
+            current_doc.clear();
+        } else {
+            current_doc.push_back(all_tokens[i]);
+        }
+    }
+
+    // Process final document if it exists
+    if (!current_doc.empty()) {
+        process_document(current_doc);
+    }
 
     // Calculate number of complete batches
-    // Each sequence needs seq_len + 1 tokens (seq_len for input, 1 for target)
-    int tokens_per_batch = batch_size * (seq_len + 1);
-    num_batches = tokens.size() / tokens_per_batch;
+    num_batches = total_sequences / batch_size;
 
     // Truncate to fit complete batches
-    int total_tokens_needed = num_batches * tokens_per_batch;
+    int total_tokens_needed = num_batches * batch_size * (seq_len + 1);
     if (tokens.size() > total_tokens_needed) {
         tokens.resize(total_tokens_needed);
     }
 
-    printf("Dataset loaded: %d tokens, %d batches of %d sequences (seq_len=%d)\n",
-           (int)tokens.size(), num_batches, batch_size, seq_len);
+    printf("Dataset loaded: %d tokens, %d sequences, %d batches of %d sequences (seq_len=%d)\n",
+           (int)all_tokens.size(), total_sequences, num_batches, batch_size, seq_len);
+    printf("   (Sequences respect document boundaries at EOS tokens)\n");
 }
 
 bool TextDataset::get_batch(int batch_idx, std::vector<int>& inputs, std::vector<int>& targets) {

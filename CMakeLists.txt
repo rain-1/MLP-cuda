@@ -50,6 +50,11 @@ add_executable(test_attention tests/test_attention.cu)
 target_link_libraries(test_attention mlp_cuda)
 add_test(NAME Attention COMMAND test_attention)
 
+# Test: EOS Handling
+add_executable(test_eos_handling tests/test_eos_handling.cpp)
+target_link_libraries(test_eos_handling mlp_cuda)
+add_test(NAME EOSHandling COMMAND test_eos_handling)
+
 # Examples
 add_executable(train_regression examples/train_regression.cu)
 target_link_libraries(train_regression mlp_cuda)

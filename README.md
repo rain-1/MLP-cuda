@@ -69,6 +69,43 @@ Output Projection → [B, N, d_model]
 - ✅ **Examples**: Working demonstrations for both MLP and Attention
 - ✅ **Documentation**: Mathematical derivations and implementation guides
 
+## Data Handling
+
+### Document Boundary Awareness with `<|endoftext|>`
+
+The training pipeline includes intelligent handling of document boundaries using `<|endoftext|>` markers:
+
+**How it works:**
+1. **Tokenizer Recognition**: The `<|endoftext|>` marker is automatically recognized and converted to an EOS (End-of-Sequence) token during encoding
+2. **Document Splitting**: Training data is split into separate documents at each `<|endoftext|>` marker
+3. **Boundary Respect**: Training sequences never span across document boundaries, preventing the model from learning incorrect transitions between unrelated content
+
+**Example:**
+```text
+Input file:
+once upon a time there was a cat<|endoftext|>the weather today is sunny<|endoftext|>
+
+What the model sees:
+Document 1: "once upon a time there was a cat" [EOS]
+Document 2: "the weather today is sunny" [EOS]
+
+✓ Training sequences stay within document boundaries
+✗ No sequences mixing unrelated content like "...cat the weather..."
+```
+
+**Benefits:**
+- ✅ Clean document separation in multi-document datasets
+- ✅ Model learns when text should end (via EOS token)
+- ✅ No contamination between unrelated documents during training
+- ✅ Better generation quality with proper ending behavior
+
+**Usage:**
+Simply include `<|endoftext|>` markers in your training data:
+```bash
+echo "First document text here<|endoftext|>Second document here<|endoftext|>" > train.txt
+./train_transformer --data train.txt
+```
+
 ## Project Structure
 
 ```

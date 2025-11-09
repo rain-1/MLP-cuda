@@ -82,17 +82,45 @@ void Tokenizer::build_vocab_from_file(const char* filename) {
 }
 
 std::vector<int> Tokenizer::encode(const std::string& text) {
-    std::string normalized = normalize(text);
     std::vector<int> tokens;
-    tokens.reserve(normalized.size());
+    tokens.reserve(text.size());
 
-    for (char c : normalized) {
-        auto it = char_to_id.find(c);
-        if (it != char_to_id.end()) {
-            tokens.push_back(it->second);
-        } else {
-            // Unknown character - skip or use a special unknown token
-            // For now, skip
+    // Split text by <|endoftext|> markers
+    const std::string eos_marker = "<|endoftext|>";
+    size_t pos = 0;
+    size_t found = 0;
+
+    while ((found = text.find(eos_marker, pos)) != std::string::npos) {
+        // Encode the segment before the marker
+        if (found > pos) {
+            std::string segment = text.substr(pos, found - pos);
+            std::string normalized = normalize(segment);
+
+            for (char c : normalized) {
+                auto it = char_to_id.find(c);
+                if (it != char_to_id.end()) {
+                    tokens.push_back(it->second);
+                }
+            }
+        }
+
+        // Add EOS token
+        tokens.push_back(eos_id);
+
+        // Move past the marker
+        pos = found + eos_marker.length();
+    }
+
+    // Encode the remaining text after the last marker
+    if (pos < text.length()) {
+        std::string segment = text.substr(pos);
+        std::string normalized = normalize(segment);
+
+        for (char c : normalized) {
+            auto it = char_to_id.find(c);
+            if (it != char_to_id.end()) {
+                tokens.push_back(it->second);
+            }
         }
     }
 
