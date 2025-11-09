@@ -185,7 +185,97 @@ void create_causal_mask(
     CUDA_CHECK(cudaGetLastError());
 }
 
-// Placeholder implementations for backward passes (to be implemented for training)
+// Layer norm backward kernel
+__global__ void layer_norm_backward_kernel(
+    const float* grad_output,
+    const float* input,
+    const float* gamma,
+    float* grad_input,
+    float* grad_gamma_partial,
+    float* grad_beta_partial,
+    int B, int N, int d_model,
+    float epsilon
+) {
+    int batch_seq = blockIdx.x;
+    if (batch_seq >= B * N) return;
+
+    extern __shared__ float sdata[];
+    int tid = threadIdx.x;
+
+    const float* x = input + batch_seq * d_model;
+    const float* dy = grad_output + batch_seq * d_model;
+    float* dx = grad_input + batch_seq * d_model;
+
+    // Recompute mean and variance
+    float sum = 0.0f;
+    for (int i = tid; i < d_model; i += blockDim.x) {
+        sum += x[i];
+    }
+    sdata[tid] = sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid + s];
+        __syncthreads();
+    }
+    float mean = sdata[0] / d_model;
+    __syncthreads();
+
+    float var_sum = 0.0f;
+    for (int i = tid; i < d_model; i += blockDim.x) {
+        float diff = x[i] - mean;
+        var_sum += diff * diff;
+    }
+    sdata[tid] = var_sum;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) sdata[tid] += sdata[tid + s];
+        __syncthreads();
+    }
+    float variance = sdata[0] / d_model;
+    float std_dev = sqrtf(variance + epsilon);
+    float inv_std = 1.0f / std_dev;
+    __syncthreads();
+
+    // Compute sums needed for gradient
+    float sum_dy = 0.0f;
+    float sum_dy_xhat = 0.0f;
+    for (int i = tid; i < d_model; i += blockDim.x) {
+        float xhat = (x[i] - mean) * inv_std;
+        sum_dy += dy[i] * gamma[i];
+        sum_dy_xhat += dy[i] * gamma[i] * xhat;
+    }
+    sdata[tid] = sum_dy;
+    sdata[tid + blockDim.x] = sum_dy_xhat;
+    __syncthreads();
+
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+            sdata[tid + blockDim.x] += sdata[tid + blockDim.x + s];
+        }
+        __syncthreads();
+    }
+    sum_dy = sdata[0];
+    sum_dy_xhat = sdata[blockDim.x];
+    __syncthreads();
+
+    // Compute gradient w.r.t. input
+    for (int i = tid; i < d_model; i += blockDim.x) {
+        float xhat = (x[i] - mean) * inv_std;
+        float dx_val = gamma[i] * dy[i];
+        dx_val -= sum_dy / d_model;
+        dx_val -= xhat * sum_dy_xhat / d_model;
+        dx_val *= inv_std;
+        dx[i] = dx_val;
+
+        // Accumulate gradients for gamma and beta
+        atomicAdd(&grad_gamma_partial[i], dy[i] * xhat);
+        atomicAdd(&grad_beta_partial[i], dy[i]);
+    }
+}
+
 void layer_norm_backward(
     const float* d_grad_output,
     const float* d_input,
@@ -196,8 +286,42 @@ void layer_norm_backward(
     int B, int N, int d_model,
     float epsilon
 ) {
-    // TODO: Implement for training
-    fprintf(stderr, "layer_norm_backward not yet implemented\n");
+    int block_size = 256;
+    int grid_size = B * N;
+    size_t shared_mem = 2 * block_size * sizeof(float);
+
+    CUDA_CHECK(cudaMemset(d_grad_gamma, 0, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_grad_beta, 0, d_model * sizeof(float)));
+
+    layer_norm_backward_kernel<<<grid_size, block_size, shared_mem>>>(
+        d_grad_output, d_input, d_gamma, d_grad_input,
+        d_grad_gamma, d_grad_beta, B, N, d_model, epsilon
+    );
+    CUDA_CHECK(cudaGetLastError());
+}
+
+// GELU backward kernel
+__global__ void gelu_backward_kernel(
+    const float* grad_output,
+    const float* input,
+    float* grad_input,
+    int size
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        float x = input[idx];
+        const float sqrt_2_over_pi = 0.7978845608f;
+        float x_cubed = x * x * x;
+        float inner = sqrt_2_over_pi * (x + 0.044715f * x_cubed);
+        float tanh_inner = tanhf(inner);
+
+        // Derivative: sech²(inner) = 1 - tanh²(inner)
+        float sech_sq = 1.0f - tanh_inner * tanh_inner;
+        float d_inner = sqrt_2_over_pi * (1.0f + 3.0f * 0.044715f * x * x);
+        float d_gelu = 0.5f * (1.0f + tanh_inner) + 0.5f * x * sech_sq * d_inner;
+
+        grad_input[idx] = grad_output[idx] * d_gelu;
+    }
 }
 
 void gelu_backward(
@@ -206,8 +330,10 @@ void gelu_backward(
     float* d_grad_input,
     int size
 ) {
-    // TODO: Implement for training
-    fprintf(stderr, "gelu_backward not yet implemented\n");
+    int block_size = 256;
+    int grid_size = (size + block_size - 1) / block_size;
+    gelu_backward_kernel<<<grid_size, block_size>>>(d_grad_output, d_input, d_grad_input, size);
+    CUDA_CHECK(cudaGetLastError());
 }
 
 void dropout_forward(
@@ -233,6 +359,26 @@ void dropout_backward(
     fprintf(stderr, "dropout_backward not yet implemented\n");
 }
 
+// Embedding backward kernel
+__global__ void embedding_backward_kernel(
+    const float* grad_output,
+    const int* token_ids,
+    float* grad_embeddings,
+    int B, int N, int vocab_size, int d_model
+) {
+    int batch = blockIdx.y;
+    int seq = blockIdx.x;
+    int dim = threadIdx.x;
+
+    if (batch < B && seq < N && dim < d_model) {
+        int token_id = token_ids[batch * N + seq];
+        if (token_id >= 0 && token_id < vocab_size) {
+            float grad = grad_output[batch * N * d_model + seq * d_model + dim];
+            atomicAdd(&grad_embeddings[token_id * d_model + dim], grad);
+        }
+    }
+}
+
 void embedding_backward(
     const float* d_grad_output,
     const int* d_token_ids,
@@ -240,6 +386,12 @@ void embedding_backward(
     int B, int N,
     int vocab_size, int d_model
 ) {
-    // TODO: Implement for training
-    fprintf(stderr, "embedding_backward not yet implemented\n");
+    dim3 block_size(d_model);
+    dim3 grid_size(N, B);
+
+    embedding_backward_kernel<<<grid_size, block_size>>>(
+        d_grad_output, d_token_ids, d_grad_embeddings,
+        B, N, vocab_size, d_model
+    );
+    CUDA_CHECK(cudaGetLastError());
 }
