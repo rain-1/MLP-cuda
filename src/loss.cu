@@ -206,10 +206,15 @@ __global__ void lm_cross_entropy_loss_kernel(
                     max_logit = fmaxf(max_logit, logits_ptr[i]);
                 }
 
-                // Compute log-sum-exp
+                // Compute log-sum-exp with Kahan summation
                 float sum_exp = 0.0f;
+                float c = 0.0f;  // Compensation term
                 for (int i = 0; i < vocab_size; i++) {
-                    sum_exp += expf(logits_ptr[i] - max_logit);
+                    float exp_val = expf(logits_ptr[i] - max_logit);
+                    float y = exp_val - c;
+                    float t = sum_exp + y;
+                    c = (t - sum_exp) - y;
+                    sum_exp = t;
                 }
                 float log_sum_exp = logf(sum_exp) + max_logit;
 
@@ -238,7 +243,7 @@ __global__ void lm_cross_entropy_loss_kernel(
 
 // Language modeling cross-entropy gradient kernel
 // Computes gradient: softmax(logits) - one_hot(target), scaled by mask
-// OLD IMPLEMENTATION: Simple but correct (reverted for debugging)
+// Uses Kahan summation for improved numerical precision
 __global__ void lm_cross_entropy_gradient_kernel(
     const float* logits,
     const int* targets,
@@ -268,10 +273,15 @@ __global__ void lm_cross_entropy_gradient_kernel(
                 max_logit = fmaxf(max_logit, logits_ptr[i]);
             }
 
-            // Every thread computes the full sum independently
+            // Kahan summation for improved precision
             float sum_exp = 0.0f;
+            float c = 0.0f;  // Compensation term
             for (int i = 0; i < vocab_size; i++) {
-                sum_exp += expf(logits_ptr[i] - max_logit);
+                float exp_val = expf(logits_ptr[i] - max_logit);
+                float y = exp_val - c;
+                float t = sum_exp + y;
+                c = (t - sum_exp) - y;
+                sum_exp = t;
             }
 
             // Each thread computes gradient for its vocabulary item
@@ -373,10 +383,10 @@ void lm_cross_entropy_gradient(
     dim3 gridSize(total_positions);
     dim3 blockSize(vocab_size);
 
-    // DEBUG: Print launch config to verify we're using old implementation
+    // DEBUG: Print launch config
     static bool printed = false;
     if (!printed) {
-        printf("[DEBUG loss.cu] Using OLD gradient kernel: grid=%d, block=%d (vocab_size=%d)\n",
+        printf("[DEBUG loss.cu] Using Kahan-enhanced gradient kernel: grid=%d, block=%d (vocab_size=%d)\n",
                total_positions, vocab_size, vocab_size);
         printed = true;
     }
