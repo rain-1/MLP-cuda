@@ -173,6 +173,7 @@ void cross_entropy_gradient(const float* d_pred, const float* d_target, float* d
 
 // Language modeling cross-entropy loss kernel
 // Computes loss for a single position: -log(softmax(logits)[target])
+// Note: This kernel processes one position per thread (no vocab_size limitation)
 __global__ void lm_cross_entropy_loss_kernel(
     const float* logits,
     const int* targets,
@@ -244,6 +245,7 @@ __global__ void lm_cross_entropy_loss_kernel(
 // Language modeling cross-entropy gradient kernel
 // Computes gradient: softmax(logits) - one_hot(target), scaled by mask
 // Uses Kahan summation for improved numerical precision
+// Supports vocab_size > 1024 using grid-stride loop
 __global__ void lm_cross_entropy_gradient_kernel(
     const float* logits,
     const int* targets,
@@ -255,9 +257,8 @@ __global__ void lm_cross_entropy_gradient_kernel(
     float scale
 ) {
     int idx = blockIdx.x;  // Position index (batch * seq_len)
-    int v = threadIdx.x;   // Vocabulary index
 
-    if (idx < batch_size * seq_len && v < vocab_size) {
+    if (idx < batch_size * seq_len) {
         // Check if this position is masked
         float m = (mask != nullptr) ? mask[idx] : 1.0f;
 
@@ -266,32 +267,59 @@ __global__ void lm_cross_entropy_gradient_kernel(
             const float* logits_ptr = logits + idx * vocab_size;
             float* grad_ptr = grad + idx * vocab_size;
 
-            // Compute softmax for this position
-            // Every thread computes the full max independently (inefficient but simple)
-            float max_logit = -INFINITY;
-            for (int i = 0; i < vocab_size; i++) {
-                max_logit = fmaxf(max_logit, logits_ptr[i]);
+            // Compute max (shared across all threads in this block)
+            extern __shared__ float sdata[];
+            float thread_max = -INFINITY;
+            for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
+                thread_max = fmaxf(thread_max, logits_ptr[v]);
             }
+            sdata[threadIdx.x] = thread_max;
+            __syncthreads();
 
-            // Kahan summation for improved precision
-            float sum_exp = 0.0f;
+            // Reduce to find global max
+            for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+                if (threadIdx.x < s) {
+                    sdata[threadIdx.x] = fmaxf(sdata[threadIdx.x], sdata[threadIdx.x + s]);
+                }
+                __syncthreads();
+            }
+            float max_logit = sdata[0];
+            __syncthreads();
+
+            // Kahan summation for exp sum (each thread accumulates subset)
+            float thread_sum = 0.0f;
             float c = 0.0f;  // Compensation term
-            for (int i = 0; i < vocab_size; i++) {
-                float exp_val = expf(logits_ptr[i] - max_logit);
+            for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
+                float exp_val = expf(logits_ptr[v] - max_logit);
                 float y = exp_val - c;
-                float t = sum_exp + y;
-                c = (t - sum_exp) - y;
-                sum_exp = t;
+                float t = thread_sum + y;
+                c = (t - thread_sum) - y;
+                thread_sum = t;
             }
+            sdata[threadIdx.x] = thread_sum;
+            __syncthreads();
 
-            // Each thread computes gradient for its vocabulary item
-            float softmax_v = expf(logits_ptr[v] - max_logit) / sum_exp;
+            // Reduce to get total sum
+            for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+                if (threadIdx.x < s) {
+                    sdata[threadIdx.x] += sdata[threadIdx.x + s];
+                }
+                __syncthreads();
+            }
+            float sum_exp = sdata[0];
+            __syncthreads();
 
-            // Gradient: softmax - one_hot(target)
-            float target_indicator = (v == target) ? 1.0f : 0.0f;
-            grad_ptr[v] = scale * m * (softmax_v - target_indicator);
+            // Each thread computes gradients for its subset of vocabulary
+            for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
+                float softmax_v = expf(logits_ptr[v] - max_logit) / sum_exp;
+                float target_indicator = (v == target) ? 1.0f : 0.0f;
+                grad_ptr[v] = scale * m * (softmax_v - target_indicator);
+            }
         } else {
-            grad[idx * vocab_size + v] = 0.0f;
+            // Zero out gradients for masked positions
+            for (int v = threadIdx.x; v < vocab_size; v += blockDim.x) {
+                grad[idx * vocab_size + v] = 0.0f;
+            }
         }
     }
 }
@@ -377,21 +405,21 @@ void lm_cross_entropy_gradient(
 
     float scale = (num_valid > 0) ? (1.0f / num_valid) : 0.0f;
 
-    // Launch kernel: one block per position, vocab_size threads per block (OLD IMPLEMENTATION)
-    // NOTE: This limits vocab_size to 1024 (max CUDA block size)
-    // But it's the simple, correct implementation for debugging
+    // Launch kernel: one block per position, with threads cooperating for large vocabularies
+    // Supports vocab_size > 1024 using grid-stride loop
     dim3 gridSize(total_positions);
-    dim3 blockSize(vocab_size);
+    int blockSize = (vocab_size <= 1024) ? vocab_size : 256;  // Use 256 threads for large vocabs
+    size_t sharedMemSize = blockSize * sizeof(float);
 
     // DEBUG: Print launch config
     static bool printed = false;
     if (!printed) {
-        printf("[DEBUG loss.cu] Using Kahan-enhanced gradient kernel: grid=%d, block=%d (vocab_size=%d)\n",
-               total_positions, vocab_size, vocab_size);
+        printf("[DEBUG loss.cu] Using Kahan-enhanced gradient kernel: grid=%d, block=%d, shared_mem=%zu (vocab_size=%d)\n",
+               total_positions, blockSize, sharedMemSize, vocab_size);
         printed = true;
     }
 
-    lm_cross_entropy_gradient_kernel<<<gridSize, blockSize>>>(
+    lm_cross_entropy_gradient_kernel<<<gridSize, blockSize, sharedMemSize>>>(
         d_logits, d_targets, d_mask, d_grad,
         batch_size, seq_len, vocab_size, scale
     );
