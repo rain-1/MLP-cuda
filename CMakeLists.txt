@@ -55,6 +55,11 @@ add_executable(test_eos_handling tests/test_eos_handling.cpp)
 target_link_libraries(test_eos_handling mlp_cuda)
 add_test(NAME EOSHandling COMMAND test_eos_handling)
 
+# Test: Loss Gradient
+add_executable(test_loss_gradient tests/test_loss_gradient.cu)
+target_link_libraries(test_loss_gradient mlp_cuda)
+add_test(NAME LossGradient COMMAND test_loss_gradient)
+
 # Examples
 add_executable(train_regression examples/train_regression.cu)
 target_link_libraries(train_regression mlp_cuda)
