@@ -433,13 +433,26 @@ float Transformer::compute_loss(
     int batch_size,
     int seq_len
 ) {
-    // Forward pass
-    forward(h_token_ids, nullptr, batch_size, seq_len);
+    // Copy inputs to device
+    CUDA_CHECK(cudaMemcpy(d_token_ids, h_token_ids,
+                         batch_size * seq_len * sizeof(int),
+                         cudaMemcpyHostToDevice));
 
-    // Compute cross-entropy loss
-    // TODO: Implement proper loss computation
-    fprintf(stderr, "Loss computation not yet implemented\n");
-    return 0.0f;
+    int* d_targets;
+    CUDA_CHECK(cudaMalloc(&d_targets, batch_size * seq_len * sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_targets, h_targets,
+                         batch_size * seq_len * sizeof(int),
+                         cudaMemcpyHostToDevice));
+
+    // Forward pass to get logits
+    forward_device(d_token_ids, d_logits_buffer, batch_size, seq_len);
+
+    // Compute loss
+    float loss = lm_cross_entropy_loss(d_logits_buffer, d_targets,
+                                       batch_size, seq_len, vocab_size);
+
+    CUDA_CHECK(cudaFree(d_targets));
+    return loss;
 }
 
 void Transformer::save_parameters(const char* filename) {
