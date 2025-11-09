@@ -8,6 +8,35 @@
 #include <string>
 #include <vector>
 #include <time.h>
+#include <cmath>
+#include <algorithm>
+
+// Learning rate schedule with linear warmup and optional cosine decay
+inline float get_learning_rate_with_warmup(
+    int step,
+    float base_lr,
+    int warmup_steps,
+    int total_steps = -1,  // -1 means no decay
+    float min_lr = 0.0f
+) {
+    // Linear warmup
+    if (step < warmup_steps) {
+        return base_lr * (static_cast<float>(step + 1) / warmup_steps);
+    }
+
+    // Constant LR after warmup (if no decay)
+    if (total_steps <= 0) {
+        return base_lr;
+    }
+
+    // Cosine decay after warmup
+    float decay_ratio = static_cast<float>(step - warmup_steps) /
+                       (total_steps - warmup_steps);
+    decay_ratio = std::min(1.0f, std::max(0.0f, decay_ratio));
+
+    float coeff = 0.5f * (1.0f + std::cos(M_PI * decay_ratio));
+    return min_lr + (base_lr - min_lr) * coeff;
+}
 
 template<typename TokenizerType>
 int run_training(
@@ -29,7 +58,8 @@ int run_training(
     // Training hyperparameters
     int batch_size = 8;
     int num_epochs = 10;
-    float learning_rate = 1e-3f;
+    float base_learning_rate = 1e-3f;
+    int warmup_steps = 500;  // Linear warmup for first 500 steps
 
     int vocab_size = tokenizer.vocab_size();
 
@@ -85,14 +115,15 @@ int run_training(
         config["seq_len"] = seq_len;
         config["batch_size"] = batch_size;
         config["num_epochs"] = num_epochs;
-        config["learning_rate"] = learning_rate;
+        config["base_learning_rate"] = base_learning_rate;
+        config["warmup_steps"] = warmup_steps;
         wandb_logger.log_config_num(config);
     }
 
     // 4. Train the model
     printf("4. Training transformer...\n");
     printf("   Training for %d epochs with batch size %d\n", num_epochs, batch_size);
-    printf("   Learning rate: %.4f\n\n", learning_rate);
+    printf("   Base learning rate: %.4f (with %d step warmup)\n\n", base_learning_rate, warmup_steps);
 
     // Initialize diagnostic logger
     DiagnosticLogger diag_logger;
@@ -126,12 +157,17 @@ int run_training(
 
             int global_step = epoch * num_batches + batch_idx;
 
+            // Compute learning rate with warmup
+            float current_lr = get_learning_rate_with_warmup(
+                global_step, base_learning_rate, warmup_steps
+            );
+
             // Training step with diagnostics
             // Enable detailed logging on first batch of each epoch
             bool detailed_logging = (batch_idx == 0);
             TrainingDiagnostics diag = model.train_step_with_diagnostics(
                 inputs.data(), targets.data(),
-                batch_size, seq_len, learning_rate,
+                batch_size, seq_len, current_lr,
                 detailed_logging
             );
 
@@ -142,7 +178,7 @@ int run_training(
 
             // Log diagnostics every 10 batches
             if ((batch_idx + 1) % 10 == 0 || batch_idx == 0) {
-                diag_logger.log_step(global_step, diag.loss, learning_rate,
+                diag_logger.log_step(global_step, diag.loss, current_lr,
                                    diag.grad_norm, diag.param_norm);
 
                 // Check for divergence
@@ -166,16 +202,16 @@ int run_training(
                 metrics["train/loss"] = diag.loss;
                 metrics["train/grad_norm"] = diag.grad_norm;
                 metrics["train/param_norm"] = diag.param_norm;
-                metrics["train/learning_rate"] = learning_rate;
+                metrics["train/learning_rate"] = current_lr;
                 metrics["train/epoch"] = epoch + 1;
                 wandb_logger.log_metrics(metrics);
             }
 
             // Print progress
             if ((batch_idx + 1) % 10 == 0 || batch_idx == num_batches - 1) {
-                printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f, GradNorm: %.2f",
+                printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f, GradNorm: %.2f, LR: %.6f",
                        epoch + 1, num_epochs, batch_idx + 1, num_batches,
-                       diag.loss, diag.grad_norm);
+                       diag.loss, diag.grad_norm, current_lr);
                 fflush(stdout);
             }
         }

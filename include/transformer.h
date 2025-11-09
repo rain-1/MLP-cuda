@@ -114,6 +114,9 @@ public:
     // Check if gradients or parameters contain NaN or Inf
     bool check_nan_or_inf();
 
+    // Clip gradients by global norm
+    void clip_gradients_by_norm(float max_norm);
+
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);
 

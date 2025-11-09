@@ -1090,6 +1090,9 @@ float Transformer::train_step(
     // Backward pass
     backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
 
+    // Clip gradients to prevent explosion (max_norm = 1.0)
+    clip_gradients_by_norm(1.0f);
+
     // ========================================================================
     // Apply Adam optimizer updates
     // ========================================================================
@@ -1388,6 +1391,64 @@ bool Transformer::check_nan_or_inf() {
     return false;
 }
 
+void Transformer::clip_gradients_by_norm(float max_norm) {
+    // Compute current gradient norm
+    float grad_norm = compute_gradient_norm();
+
+    // Only clip if norm exceeds max_norm
+    if (grad_norm <= max_norm) {
+        return;
+    }
+
+    // Compute scaling factor
+    float scale = max_norm / grad_norm;
+
+    // Scale all gradients by the scaling factor
+    // Embeddings and output
+    if (d_grad_token_embeddings) {
+        scale_matrix(d_grad_token_embeddings, scale, vocab_size * d_model);
+    }
+    if (d_grad_position_embeddings) {
+        scale_matrix(d_grad_position_embeddings, scale, max_seq_len * d_model);
+    }
+    if (d_grad_output_weights) {
+        scale_matrix(d_grad_output_weights, scale, d_model * vocab_size);
+    }
+    if (d_grad_output_bias) {
+        scale_matrix(d_grad_output_bias, scale, vocab_size);
+    }
+    if (d_grad_ln_final_gamma) {
+        scale_matrix(d_grad_ln_final_gamma, scale, d_model);
+    }
+    if (d_grad_ln_final_beta) {
+        scale_matrix(d_grad_ln_final_beta, scale, d_model);
+    }
+
+    // Block gradients
+    for (int i = 0; i < num_layers; i++) {
+        auto& grads = block_grads[i];
+
+        scale_matrix(grads.d_grad_ln1_gamma, scale, d_model);
+        scale_matrix(grads.d_grad_ln1_beta, scale, d_model);
+        scale_matrix(grads.d_grad_ln2_gamma, scale, d_model);
+        scale_matrix(grads.d_grad_ln2_beta, scale, d_model);
+
+        scale_matrix(grads.d_grad_attn_W_Q, scale, d_model * d_model);
+        scale_matrix(grads.d_grad_attn_b_Q, scale, d_model);
+        scale_matrix(grads.d_grad_attn_W_K, scale, d_model * d_model);
+        scale_matrix(grads.d_grad_attn_b_K, scale, d_model);
+        scale_matrix(grads.d_grad_attn_W_V, scale, d_model * d_model);
+        scale_matrix(grads.d_grad_attn_b_V, scale, d_model);
+        scale_matrix(grads.d_grad_attn_W_O, scale, d_model * d_model);
+        scale_matrix(grads.d_grad_attn_b_O, scale, d_model);
+
+        scale_matrix(grads.d_grad_ffn_W1, scale, d_ff * d_model);
+        scale_matrix(grads.d_grad_ffn_b1, scale, d_ff);
+        scale_matrix(grads.d_grad_ffn_W2, scale, d_model * d_ff);
+        scale_matrix(grads.d_grad_ffn_b2, scale, d_model);
+    }
+}
+
 TrainingDiagnostics Transformer::train_step_with_diagnostics(
     const int* h_token_ids,
     const int* h_targets,
@@ -1419,7 +1480,10 @@ TrainingDiagnostics Transformer::train_step_with_diagnostics(
     // Backward pass
     backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
 
-    // Compute diagnostics BEFORE optimizer update
+    // Clip gradients to prevent explosion (max_norm = 1.0)
+    clip_gradients_by_norm(1.0f);
+
+    // Compute diagnostics AFTER clipping
     TrainingDiagnostics diag;
     diag.loss = loss;
     diag.grad_norm = compute_gradient_norm();
