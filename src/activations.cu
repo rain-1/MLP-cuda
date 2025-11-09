@@ -1,6 +1,7 @@
 #include "activations.h"
 #include "matrix_ops.h"
 #include <cuda_runtime.h>
+#include <stdio.h>
 #include <math.h>
 
 // ReLU forward kernel
