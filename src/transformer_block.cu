@@ -58,9 +58,10 @@ void FeedForwardNetwork::initialize_parameters() {
     curandGenerateNormal(gen, d_W1, d_model * d_ff, 0.0f, std1);
     CUDA_CHECK(cudaMemset(d_b1, 0, d_ff * sizeof(float)));
 
-    // W2 initialization with depth scaling (GPT-2/3 style)
+    // W2 initialization - TEMPORARILY DISABLE DEPTH SCALING TO TEST
     // Scale by init_scale to account for residual path accumulation
-    float std2 = sqrtf(2.0f / (d_ff + d_model)) * init_scale;
+    // float std2 = sqrtf(2.0f / (d_ff + d_model)) * init_scale;
+    float std2 = sqrtf(2.0f / (d_ff + d_model));  // Standard Xavier, no depth scaling
     curandGenerateNormal(gen, d_W2, d_ff * d_model, 0.0f, std2);
     CUDA_CHECK(cudaMemset(d_b2, 0, d_model * sizeof(float)));
 

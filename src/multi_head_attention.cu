@@ -95,10 +95,10 @@ void MultiHeadAttention::initialize_parameters() {
     curandGenerateNormal(gen, d_W_K, d_model * d_model, 0.0f, std);
     curandGenerateNormal(gen, d_W_V, d_model * d_model, 0.0f, std);
 
-    // W_O initialization with depth scaling (GPT-2/3 style)
+    // W_O initialization - TEMPORARILY DISABLE DEPTH SCALING TO TEST
     // Scale by init_scale to account for residual path accumulation
-    float std_o = std * init_scale;
-    curandGenerateNormal(gen, d_W_O, d_model * d_model, 0.0f, std_o);
+    // float std_o = std * init_scale;
+    curandGenerateNormal(gen, d_W_O, d_model * d_model, 0.0f, std);  // Standard init, no depth scaling
 
     // Initialize biases to zero
     CUDA_CHECK(cudaMemset(d_b_Q, 0, d_model * sizeof(float)));
