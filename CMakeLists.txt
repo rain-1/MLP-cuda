@@ -23,6 +23,9 @@ add_library(mlp_cuda STATIC
     src/mlp.cu
     src/attention_ops.cu
     src/multi_head_attention.cu
+    src/transformer_layers.cu
+    src/transformer_block.cu
+    src/tokenizer.cpp
 )
 
 target_link_libraries(mlp_cuda curand)
