@@ -1,5 +1,6 @@
 #include "transformer.h"
 #include "debug_monitor.h"
+#include "matrix_ops.h"  // For CUDA_CHECK macro
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,7 +23,7 @@ bool test_copy_sequence() {
     int seq_len = 8;
 
     Transformer model(vocab_size, d_model, num_layers, num_heads, d_ff, max_seq_len,
-                      1.0f, 0.9f, 0.999f, 1e-8f, 0.0f);  // No weight decay for this test
+                      batch_size);
 
     // Create simple training data: copy task
     // Input: random sequence, Target: same sequence
@@ -170,7 +171,7 @@ bool test_overfit_single_batch() {
     int seq_len = 16;
 
     Transformer model(vocab_size, d_model, num_layers, num_heads, d_ff, max_seq_len,
-                      1.0f, 0.9f, 0.999f, 1e-8f, 0.0f);
+                      batch_size);
 
     // Create a single batch of random data
     int* h_input = new int[batch_size * seq_len];
