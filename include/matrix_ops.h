@@ -29,6 +29,7 @@ void sum_rows(const float* d_input, float* d_output, int B, int N);
 
 // Element-wise operations
 void elementwise_multiply(const float* d_A, const float* d_B, float* d_C, int size);
+void elementwise_add(const float* d_A, const float* d_B, float* d_C, int size);
 void scale_matrix(float* d_A, float scale, int size);
 
 // Backward passes for training

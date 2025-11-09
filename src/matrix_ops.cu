@@ -178,6 +178,15 @@ __global__ void elementwise_multiply_kernel(const float* A, const float* B,
     }
 }
 
+// Element-wise addition
+__global__ void elementwise_add_kernel(const float* A, const float* B,
+                                        float* C, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        C[idx] = A[idx] + B[idx];
+    }
+}
+
 // Scale matrix by constant
 __global__ void scale_matrix_kernel(float* A, float scale, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -241,6 +250,14 @@ void elementwise_multiply(const float* d_A, const float* d_B, float* d_C, int si
     int gridSize = (size + blockSize - 1) / blockSize;
 
     elementwise_multiply_kernel<<<gridSize, blockSize>>>(d_A, d_B, d_C, size);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+void elementwise_add(const float* d_A, const float* d_B, float* d_C, int size) {
+    int blockSize = 256;
+    int gridSize = (size + blockSize - 1) / blockSize;
+
+    elementwise_add_kernel<<<gridSize, blockSize>>>(d_A, d_B, d_C, size);
     CUDA_CHECK(cudaGetLastError());
 }
 

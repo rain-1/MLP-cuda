@@ -63,6 +63,23 @@ public:
         const float* d_mask_input = nullptr
     );
 
+    // Backward pass - Device to device (for training)
+    // d_input: input from forward pass [B, N, d_model]
+    // d_grad_output: gradient w.r.t. output [B, N, d_model]
+    // d_grad_input: gradient w.r.t. input [B, N, d_model] (output)
+    // d_grad_W_*,  d_grad_b_*: parameter gradients (output)
+    void backward_device_to_device(
+        const float* d_input,
+        const float* d_grad_output,
+        float* d_grad_input,
+        float* d_grad_W_Q, float* d_grad_b_Q,
+        float* d_grad_W_K, float* d_grad_b_K,
+        float* d_grad_W_V, float* d_grad_b_V,
+        float* d_grad_W_O, float* d_grad_b_O,
+        int batch_size,
+        int seq_len
+    );
+
     // Save/load parameters
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);
