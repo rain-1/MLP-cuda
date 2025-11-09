@@ -237,6 +237,31 @@ Branch: `claude/add-diagnostics-systems-011CUxGE9rpjxjHJzcWNXnA4`
 1. `24384be` - Update .gitignore to exclude test binaries and diagnostic logs
 2. `d956456` - Add comprehensive numerical precision and training diagnostics systems
 3. `534c0b0` - Integrate Kahan summation into loss gradient kernel for improved precision ⭐
+4. `265e7d7` - Fix gradient test: use realistic epsilon and acceptance criteria
+5. `61b3d97` - Fix gradient kernel to support vocabularies larger than 1024 ⭐
+
+## Additional Fix: Large Vocabulary Support
+
+### Problem
+The kernel used `blockSize=vocab_size`, which exceeded CUDA's 1024 thread limit when using word-level tokenization (vocab_size=2004).
+
+```
+CUDA error: invalid argument
+[DEBUG] grid=256, block=2004 (vocab_size=2004)  // ❌ 2004 > 1024 max!
+```
+
+### Solution
+Rewrote kernel to use **grid-stride loop pattern**:
+- Threads cooperate via shared memory reductions
+- Max computation: parallel reduction across threads
+- Sum computation: Kahan summation with parallel reduction
+- Gradient computation: each thread handles multiple vocab items
+- Block size: 256 threads for large vocabs, vocab_size for small
+
+### Result
+✅ Supports arbitrary vocabulary sizes (tested with 2004 tokens)
+✅ Maintains Kahan summation precision
+✅ Better GPU occupancy for large vocabs
 
 ## References
 
