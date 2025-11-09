@@ -28,7 +28,9 @@ int run_training(
     // Training hyperparameters
     int batch_size = 8;
     int num_epochs = 10;
-    float learning_rate = 1e-3f;
+    float base_learning_rate = 1e-4f;  // Reduced from 1e-3 to 1e-4 for stability
+    int warmup_steps = 100;            // Linear warmup for first 100 steps
+    float warmup_init_lr = 1e-6f;      // Start with very small LR
 
     int vocab_size = tokenizer.vocab_size();
 
@@ -84,16 +86,22 @@ int run_training(
         config["seq_len"] = seq_len;
         config["batch_size"] = batch_size;
         config["num_epochs"] = num_epochs;
-        config["learning_rate"] = learning_rate;
+        config["base_learning_rate"] = base_learning_rate;
+        config["warmup_steps"] = warmup_steps;
+        config["warmup_init_lr"] = warmup_init_lr;
         wandb_logger.log_config_num(config);
     }
 
     // 4. Train the model
     printf("4. Training transformer...\n");
     printf("   Training for %d epochs with batch size %d\n", num_epochs, batch_size);
-    printf("   Learning rate: %.4f\n\n", learning_rate);
+    printf("   Base learning rate: %.6f (with %d step warmup from %.6f)\n",
+           base_learning_rate, warmup_steps, warmup_init_lr);
+    printf("   Gradient clipping enabled: max_norm = 1.0\n\n");
 
     time_t start_time = time(nullptr);
+
+    int global_step = 0;  // Track global training step for warmup schedule
 
     for (int epoch = 0; epoch < num_epochs; epoch++) {
         printf("   === Epoch %d/%d ===\n", epoch + 1, num_epochs);
@@ -114,17 +122,28 @@ int run_training(
                 break;
             }
 
+            // Compute learning rate with warmup schedule
+            float learning_rate;
+            if (global_step < warmup_steps) {
+                // Linear warmup: interpolate from warmup_init_lr to base_learning_rate
+                float warmup_factor = (float)global_step / (float)warmup_steps;
+                learning_rate = warmup_init_lr + warmup_factor * (base_learning_rate - warmup_init_lr);
+            } else {
+                learning_rate = base_learning_rate;
+            }
+
             // Training step: forward + backward + optimizer update
             float loss = model.train_step(inputs.data(), targets.data(),
                                          batch_size, seq_len, learning_rate);
+
+            global_step++;
 
             total_loss += loss;
             num_samples++;
 
             // Log to wandb
             if (use_wandb) {
-                int global_step = epoch * num_batches + batch_idx;
-                wandb_logger.set_step(global_step);
+                wandb_logger.set_step(global_step - 1);
 
                 std::map<std::string, double> metrics;
                 metrics["train/loss"] = loss;
@@ -146,7 +165,6 @@ int run_training(
 
         // Log epoch average loss to wandb
         if (use_wandb) {
-            int global_step = (epoch + 1) * num_batches;
             wandb_logger.set_step(global_step);
 
             std::map<std::string, double> metrics;

@@ -20,6 +20,7 @@ add_library(mlp_cuda STATIC
     src/activations.cu
     src/loss.cu
     src/adam.cu
+    src/gradient_utils.cu
     src/mlp.cu
     src/attention_ops.cu
     src/multi_head_attention.cu

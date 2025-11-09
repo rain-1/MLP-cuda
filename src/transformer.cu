@@ -4,6 +4,7 @@
 #include "matrix_ops.h"
 #include "loss.h"
 #include "adam.h"
+#include "gradient_utils.h"
 #include <cuda_runtime.h>
 #include <curand.h>
 #include <curand_kernel.h>
@@ -11,6 +12,7 @@
 #include <math.h>
 #include <algorithm>
 #include <fstream>
+#include <vector>
 
 // ============================================================================
 // CUDA Kernels
@@ -1088,6 +1090,100 @@ float Transformer::train_step(
 
     // Backward pass
     backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
+
+    // ========================================================================
+    // Gradient diagnostics and clipping
+    // ========================================================================
+
+    // Collect all gradient pointers and sizes for global norm computation
+    std::vector<float*> grad_ptrs;
+    std::vector<int> grad_sizes;
+
+    // Add transformer-level gradients
+    grad_ptrs.push_back(d_grad_token_embeddings);
+    grad_sizes.push_back(vocab_size * d_model);
+
+    grad_ptrs.push_back(d_grad_position_embeddings);
+    grad_sizes.push_back(max_seq_len * d_model);
+
+    grad_ptrs.push_back(d_grad_output_weights);
+    grad_sizes.push_back(d_model * vocab_size);
+
+    grad_ptrs.push_back(d_grad_output_bias);
+    grad_sizes.push_back(vocab_size);
+
+    grad_ptrs.push_back(d_grad_ln_final_gamma);
+    grad_sizes.push_back(d_model);
+
+    grad_ptrs.push_back(d_grad_ln_final_beta);
+    grad_sizes.push_back(d_model);
+
+    // Add block gradients
+    for (int i = 0; i < num_layers; i++) {
+        auto& grads = block_grads[i];
+
+        grad_ptrs.push_back(grads.d_grad_ln1_gamma);
+        grad_sizes.push_back(d_model);
+        grad_ptrs.push_back(grads.d_grad_ln1_beta);
+        grad_sizes.push_back(d_model);
+        grad_ptrs.push_back(grads.d_grad_ln2_gamma);
+        grad_sizes.push_back(d_model);
+        grad_ptrs.push_back(grads.d_grad_ln2_beta);
+        grad_sizes.push_back(d_model);
+
+        grad_ptrs.push_back(grads.d_grad_attn_W_Q);
+        grad_sizes.push_back(d_model * d_model);
+        grad_ptrs.push_back(grads.d_grad_attn_b_Q);
+        grad_sizes.push_back(d_model);
+        grad_ptrs.push_back(grads.d_grad_attn_W_K);
+        grad_sizes.push_back(d_model * d_model);
+        grad_ptrs.push_back(grads.d_grad_attn_b_K);
+        grad_sizes.push_back(d_model);
+        grad_ptrs.push_back(grads.d_grad_attn_W_V);
+        grad_sizes.push_back(d_model * d_model);
+        grad_ptrs.push_back(grads.d_grad_attn_b_V);
+        grad_sizes.push_back(d_model);
+        grad_ptrs.push_back(grads.d_grad_attn_W_O);
+        grad_sizes.push_back(d_model * d_model);
+        grad_ptrs.push_back(grads.d_grad_attn_b_O);
+        grad_sizes.push_back(d_model);
+
+        grad_ptrs.push_back(grads.d_grad_ffn_W1);
+        grad_sizes.push_back(d_ff * d_model);
+        grad_ptrs.push_back(grads.d_grad_ffn_b1);
+        grad_sizes.push_back(d_ff);
+        grad_ptrs.push_back(grads.d_grad_ffn_W2);
+        grad_sizes.push_back(d_model * d_ff);
+        grad_ptrs.push_back(grads.d_grad_ffn_b2);
+        grad_sizes.push_back(d_model);
+    }
+
+    // Compute global gradient norm BEFORE clipping
+    float grad_norm_before = compute_global_gradient_norm(
+        grad_ptrs.data(), grad_sizes.data(), grad_ptrs.size()
+    );
+
+    // Apply gradient clipping
+    const float max_grad_norm = 1.0f;
+    clip_gradients_by_global_norm(
+        grad_ptrs.data(), grad_sizes.data(), grad_ptrs.size(), max_grad_norm
+    );
+
+    // Compute global gradient norm AFTER clipping (for logging)
+    float grad_norm_after = compute_global_gradient_norm(
+        grad_ptrs.data(), grad_sizes.data(), grad_ptrs.size()
+    );
+
+    // Print diagnostic information (every 10 steps to avoid spam)
+    if (training_step % 10 == 0) {
+        // Compute parameter norm for monitoring
+        float param_norm = compute_parameter_norm(d_token_embeddings, vocab_size * d_model);
+
+        printf("      [Step %d] Loss: %.4f | Grad norm: %.4f -> %.4f (clipped: %s) | Param norm: %.4f | LR: %.6f\n",
+               training_step, loss, grad_norm_before, grad_norm_after,
+               grad_norm_before > max_grad_norm ? "YES" : "NO",
+               param_norm, learning_rate);
+    }
 
     // ========================================================================
     // Apply Adam optimizer updates
