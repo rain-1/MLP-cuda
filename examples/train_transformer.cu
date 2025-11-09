@@ -2,16 +2,38 @@
 #include "tokenizer.h"
 #include "text_dataset.h"
 #include "loss.h"
+#include "wandb_logger.h"
 #include <stdio.h>
 #include <string>
 #include <vector>
 #include <time.h>
+#include <cstring>
 
 int main(int argc, char** argv) {
     printf("=== Transformer Training Demo ===\n\n");
 
-    // Training configuration
-    const char* text_file = (argc > 1) ? argv[1] : nullptr;
+    // Parse command line arguments
+    const char* text_file = nullptr;
+    bool use_wandb = false;
+    const char* wandb_project = "transformer-training";
+    const char* wandb_run = nullptr;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--wandb") == 0) {
+            use_wandb = true;
+        } else if (strcmp(argv[i], "--wandb-project") == 0 && i + 1 < argc) {
+            wandb_project = argv[++i];
+        } else if (strcmp(argv[i], "--wandb-run") == 0 && i + 1 < argc) {
+            wandb_run = argv[++i];
+        } else if (strcmp(argv[i], "--data") == 0 && i + 1 < argc) {
+            text_file = argv[++i];
+        } else {
+            // Backward compatibility: first positional arg is data file
+            if (text_file == nullptr) {
+                text_file = argv[i];
+            }
+        }
+    }
 
     // Model hyperparameters (small model for demo)
     int d_model = 128;
@@ -91,6 +113,32 @@ int main(int argc, char** argv) {
     printf("   - d_ff: %d\n", d_ff);
     printf("   - seq_len: %d\n\n", seq_len);
 
+    // Initialize wandb logger
+    WandbLogger wandb_logger("training_metrics.jsonl");
+    wandb_logger.set_enabled(use_wandb);
+
+    if (use_wandb) {
+        printf("   Wandb: enabled (project=%s, run=%s)\n",
+               wandb_project, wandb_run ? wandb_run : "auto");
+        printf("   To view logs, run: python scripts/wandb_logger.py training_metrics.jsonl %s %s\n\n",
+               wandb_project, wandb_run ? wandb_run : "");
+
+        // Log configuration
+        std::map<std::string, double> config;
+        config["vocab_size"] = vocab_size;
+        config["d_model"] = d_model;
+        config["num_layers"] = num_layers;
+        config["num_heads"] = num_heads;
+        config["d_ff"] = d_ff;
+        config["max_seq_len"] = max_seq_len;
+        config["seq_len"] = seq_len;
+        config["batch_size"] = batch_size;
+        config["num_epochs"] = num_epochs;
+        config["learning_rate"] = learning_rate;
+        config["num_batches"] = num_batches;
+        wandb_logger.log_config_num(config);
+    }
+
     // 4. Training loop
     printf("4. Training...\n");
     printf("   Epochs: %d\n", num_epochs);
@@ -123,6 +171,18 @@ int main(int argc, char** argv) {
             total_loss += loss;
             num_samples++;
 
+            // Log to wandb
+            if (use_wandb) {
+                int global_step = epoch * num_batches + batch_idx;
+                wandb_logger.set_step(global_step);
+
+                std::map<std::string, double> metrics;
+                metrics["train/loss"] = loss;
+                metrics["train/learning_rate"] = learning_rate;
+                metrics["train/epoch"] = epoch + 1;
+                wandb_logger.log_metrics(metrics);
+            }
+
             // Print progress
             if ((batch_idx + 1) % 10 == 0 || batch_idx == num_batches - 1) {
                 printf("\r   Epoch %d/%d, Batch %d/%d, Loss: %.4f",
@@ -134,6 +194,16 @@ int main(int argc, char** argv) {
         float avg_loss = total_loss / num_samples;
         printf("\n   Epoch %d complete - Average loss: %.4f\n\n", epoch + 1, avg_loss);
 
+        // Log epoch average loss to wandb
+        if (use_wandb) {
+            int global_step = (epoch + 1) * num_batches;
+            wandb_logger.set_step(global_step);
+
+            std::map<std::string, double> metrics;
+            metrics["train/epoch_avg_loss"] = avg_loss;
+            wandb_logger.log_metrics(metrics);
+        }
+
         // Generate sample text every few epochs
         if ((epoch + 1) % 2 == 0) {
             printf("   Sample generation:\n");
@@ -142,12 +212,24 @@ int main(int argc, char** argv) {
             std::vector<int> generated = model.generate(prompt_tokens, 30, 0.8f, 0, 1.0f, epoch);
             std::string generated_text = tokenizer.decode(generated);
             printf("   \"%s\"\n\n", generated_text.c_str());
+
+            // Log sample to wandb
+            if (use_wandb) {
+                wandb_logger.log_sample(prompt, generated_text);
+            }
         }
     }
 
     time_t end_time = time(nullptr);
     int elapsed = (int)(end_time - start_time);
     printf("Training complete in %d seconds\n\n", elapsed);
+
+    // Log training time to wandb
+    if (use_wandb) {
+        std::map<std::string, double> metrics;
+        metrics["train/total_time_seconds"] = elapsed;
+        wandb_logger.log_metrics(metrics);
+    }
 
     // 5. Save model
     const char* model_path = "trained_transformer.bin";
@@ -170,6 +252,18 @@ int main(int argc, char** argv) {
         std::string generated_text = tokenizer.decode(generated);
         printf("   Prompt: \"%s\"\n", prompt.c_str());
         printf("   Output: \"%s\"\n\n", generated_text.c_str());
+
+        // Log final samples to wandb
+        if (use_wandb) {
+            wandb_logger.log_sample(prompt, generated_text);
+        }
+    }
+
+    // Finish wandb logging
+    if (use_wandb) {
+        wandb_logger.finish();
+        printf("   Wandb logging complete. Run: python scripts/wandb_logger.py training_metrics.jsonl %s %s\n\n",
+               wandb_project, wandb_run ? wandb_run : "");
     }
 
     printf("=== Training demo complete! ===\n");
