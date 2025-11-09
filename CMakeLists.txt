@@ -29,6 +29,8 @@ add_library(mlp_cuda STATIC
     src/gradient_utils.cu
     src/tokenizer.cpp
     src/word_tokenizer.cpp
+    src/gradient_check.cu
+    src/debug_monitor.cu
 )
 
 target_link_libraries(mlp_cuda curand)
@@ -55,6 +57,16 @@ add_test(NAME Attention COMMAND test_attention)
 add_executable(test_eos_handling tests/test_eos_handling.cpp)
 target_link_libraries(test_eos_handling mlp_cuda)
 add_test(NAME EOSHandling COMMAND test_eos_handling)
+
+# Test: FFN Gradients
+add_executable(test_ffn_gradients tests/test_ffn_gradients.cu)
+target_link_libraries(test_ffn_gradients mlp_cuda)
+add_test(NAME FFNGradients COMMAND test_ffn_gradients)
+
+# Test: Toy Problems
+add_executable(test_toy_problems tests/test_toy_problems.cu)
+target_link_libraries(test_toy_problems mlp_cuda)
+add_test(NAME ToyProblems COMMAND test_toy_problems)
 
 # Examples
 add_executable(train_regression examples/train_regression.cu)
