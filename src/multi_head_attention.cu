@@ -291,3 +291,185 @@ void MultiHeadAttention::load_parameters(const char* filename) {
 
     file.close();
 }
+
+void MultiHeadAttention::backward_device_to_device(
+    const float* d_input,
+    const float* d_grad_output,
+    float* d_grad_input,
+    float* d_grad_W_Q, float* d_grad_b_Q,
+    float* d_grad_W_K, float* d_grad_b_K,
+    float* d_grad_W_V, float* d_grad_b_V,
+    float* d_grad_W_O, float* d_grad_b_O,
+    int batch_size,
+    int seq_len
+) {
+    // Allocate temporary gradient buffers
+    float *d_grad_output_concat, *d_grad_context;
+    float *d_grad_Q_heads, *d_grad_K_heads, *d_grad_V_heads;
+    float *d_grad_Q_proj, *d_grad_K_proj, *d_grad_V_proj;
+    float *d_grad_scores_buffer, *d_grad_attn_buffer;
+    float *d_grad_input_from_Q, *d_grad_input_from_K, *d_grad_input_from_V;
+
+    CUDA_CHECK(cudaMalloc(&d_grad_output_concat, batch_size * seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_context, batch_size * num_heads * seq_len * d_v * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_Q_heads, batch_size * num_heads * seq_len * d_k * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_K_heads, batch_size * num_heads * seq_len * d_k * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_V_heads, batch_size * num_heads * seq_len * d_v * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_Q_proj, batch_size * seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_K_proj, batch_size * seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_V_proj, batch_size * seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_scores_buffer, batch_size * num_heads * seq_len * seq_len * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_attn_buffer, batch_size * num_heads * seq_len * seq_len * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_input_from_Q, batch_size * seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_input_from_K, batch_size * seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_input_from_V, batch_size * seq_len * d_model * sizeof(float)));
+
+    // Note: Forward pass saved intermediate values in member buffers
+    // d_Q_proj, d_K_proj, d_V_proj, d_Q_heads, d_K_heads, d_V_heads,
+    // d_output_concat, d_attn_weights
+
+    // For self-attention, we need input in d_X and d_KV
+    CUDA_CHECK(cudaMemcpy(d_X, d_input, batch_size * seq_len * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(d_KV, d_input, batch_size * seq_len * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+
+    // ========================================================================
+    // Backward through output projection: output = output_concat · W_O^T + b_O
+    // ========================================================================
+
+    // Gradient w.r.t. b_O
+    sum_rows(d_grad_output, d_grad_b_O, batch_size * seq_len, d_model);
+
+    // Gradients w.r.t. output_concat and W_O
+    matmul_transB_backward(
+        d_grad_output,        // grad_C [B*seq_len x d_model]
+        d_output_concat,      // A [B*seq_len x d_model]
+        d_W_O,                // B [d_model x d_model]
+        d_grad_output_concat, // grad_A [B*seq_len x d_model]
+        d_grad_W_O,           // grad_B [d_model x d_model]
+        batch_size * seq_len, // M
+        d_model,              // K
+        d_model               // N
+    );
+
+    // ========================================================================
+    // Backward through reshape/concatenate: [B*h, N, d_v] -> [B, N, h*d_v]
+    // ========================================================================
+
+    reshape_BNhd_to_BhNd(d_grad_output_concat, d_grad_context, batch_size, seq_len, num_heads, d_v);
+
+    // ========================================================================
+    // Backward through scaled dot-product attention
+    // ========================================================================
+
+    scaled_dot_product_attention_backward(
+        d_Q_heads, d_K_heads, d_V_heads,  // Forward inputs (saved in member buffers)
+        d_attn_weights,                    // Saved from forward
+        d_grad_context,                    // Gradient w.r.t. context
+        d_grad_Q_heads,                    // Gradient w.r.t. Q_heads (output)
+        d_grad_K_heads,                    // Gradient w.r.t. K_heads (output)
+        d_grad_V_heads,                    // Gradient w.r.t. V_heads (output)
+        d_grad_scores_buffer,              // Temporary
+        d_grad_attn_buffer,                // Temporary
+        batch_size * num_heads,            // Bh
+        seq_len, seq_len,                  // N, M
+        d_k, d_v,                          // d_k, d_v
+        nullptr                            // mask (TODO: add mask support)
+    );
+
+    // ========================================================================
+    // Backward through reshape: [B, N, h*d] -> [B*h, N, d]
+    // ========================================================================
+
+    reshape_BhNd_to_BNhd(d_grad_Q_heads, d_grad_Q_proj, batch_size, seq_len, num_heads, d_k);
+    reshape_BhNd_to_BNhd(d_grad_K_heads, d_grad_K_proj, batch_size, seq_len, num_heads, d_k);
+    reshape_BhNd_to_BNhd(d_grad_V_heads, d_grad_V_proj, batch_size, seq_len, num_heads, d_v);
+
+    // ========================================================================
+    // Backward through Q projection: Q_proj = X · W_Q^T + b_Q
+    // ========================================================================
+
+    sum_rows(d_grad_Q_proj, d_grad_b_Q, batch_size * seq_len, d_model);
+    matmul_transB_backward(
+        d_grad_Q_proj,       // grad_C [B*seq_len x d_model]
+        d_X,                 // A [B*seq_len x d_model]
+        d_W_Q,               // B [d_model x d_model]
+        d_grad_input_from_Q, // grad_A [B*seq_len x d_model]
+        d_grad_W_Q,          // grad_B [d_model x d_model]
+        batch_size * seq_len, // M
+        d_model,             // K
+        d_model              // N
+    );
+
+    // ========================================================================
+    // Backward through K projection: K_proj = KV · W_K^T + b_K
+    // ========================================================================
+
+    sum_rows(d_grad_K_proj, d_grad_b_K, batch_size * seq_len, d_model);
+    matmul_transB_backward(
+        d_grad_K_proj,       // grad_C [B*seq_len x d_model]
+        d_KV,                // A [B*seq_len x d_model]
+        d_W_K,               // B [d_model x d_model]
+        d_grad_input_from_K, // grad_A [B*seq_len x d_model]
+        d_grad_W_K,          // grad_B [d_model x d_model]
+        batch_size * seq_len, // M
+        d_model,             // K
+        d_model              // N
+    );
+
+    // ========================================================================
+    // Backward through V projection: V_proj = KV · W_V^T + b_V
+    // ========================================================================
+
+    sum_rows(d_grad_V_proj, d_grad_b_V, batch_size * seq_len, d_model);
+    matmul_transB_backward(
+        d_grad_V_proj,       // grad_C [B*seq_len x d_model]
+        d_KV,                // A [B*seq_len x d_model]
+        d_W_V,               // B [d_model x d_model]
+        d_grad_input_from_V, // grad_A [B*seq_len x d_model]
+        d_grad_W_V,          // grad_B [d_model x d_model]
+        batch_size * seq_len, // M
+        d_model,             // K
+        d_model              // N
+    );
+
+    // ========================================================================
+    // Accumulate gradients from Q, K, V paths to get total gradient w.r.t. input
+    // For self-attention: d_grad_input = grad_Q + grad_K + grad_V
+    // ========================================================================
+
+    int total_size = batch_size * seq_len * d_model;
+
+    // First, copy grad_input_from_Q to output
+    CUDA_CHECK(cudaMemcpy(d_grad_input, d_grad_input_from_Q, total_size * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+
+    // Then add grad_input_from_K
+    float* d_temp;
+    CUDA_CHECK(cudaMalloc(&d_temp, total_size * sizeof(float)));
+    elementwise_add(d_grad_input, d_grad_input_from_K, d_temp, total_size);
+    CUDA_CHECK(cudaMemcpy(d_grad_input, d_temp, total_size * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+
+    // Finally add grad_input_from_V
+    elementwise_add(d_grad_input, d_grad_input_from_V, d_temp, total_size);
+    CUDA_CHECK(cudaMemcpy(d_grad_input, d_temp, total_size * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+
+    // Free temporary buffers
+    CUDA_CHECK(cudaFree(d_temp));
+    CUDA_CHECK(cudaFree(d_grad_output_concat));
+    CUDA_CHECK(cudaFree(d_grad_context));
+    CUDA_CHECK(cudaFree(d_grad_Q_heads));
+    CUDA_CHECK(cudaFree(d_grad_K_heads));
+    CUDA_CHECK(cudaFree(d_grad_V_heads));
+    CUDA_CHECK(cudaFree(d_grad_Q_proj));
+    CUDA_CHECK(cudaFree(d_grad_K_proj));
+    CUDA_CHECK(cudaFree(d_grad_V_proj));
+    CUDA_CHECK(cudaFree(d_grad_scores_buffer));
+    CUDA_CHECK(cudaFree(d_grad_attn_buffer));
+    CUDA_CHECK(cudaFree(d_grad_input_from_Q));
+    CUDA_CHECK(cudaFree(d_grad_input_from_K));
+    CUDA_CHECK(cudaFree(d_grad_input_from_V));
+}
