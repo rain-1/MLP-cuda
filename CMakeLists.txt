@@ -29,6 +29,7 @@ add_library(mlp_cuda STATIC
     src/transformer.cu
     src/tokenizer.cpp
     src/word_tokenizer.cpp
+    src/training_diagnostics.cpp
 )
 
 target_link_libraries(mlp_cuda curand)
@@ -60,6 +61,11 @@ add_test(NAME EOSHandling COMMAND test_eos_handling)
 add_executable(test_loss_gradient tests/test_loss_gradient.cu)
 target_link_libraries(test_loss_gradient mlp_cuda)
 add_test(NAME LossGradient COMMAND test_loss_gradient)
+
+# Test: Diagnostics System
+add_executable(test_diagnostics tests/test_diagnostics.cpp)
+target_link_libraries(test_diagnostics mlp_cuda)
+add_test(NAME Diagnostics COMMAND test_diagnostics)
 
 # Examples
 add_executable(train_regression examples/train_regression.cu)
