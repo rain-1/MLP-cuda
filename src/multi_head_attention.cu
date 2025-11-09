@@ -191,6 +191,34 @@ void MultiHeadAttention::forward_cross(
                          cudaMemcpyDeviceToHost));
 }
 
+void MultiHeadAttention::forward_device_to_device(
+    const float* d_input,
+    float* d_output,
+    int batch_size,
+    int seq_len,
+    const float* d_mask_input
+) {
+    // Self-attention: Q = K = V = input
+    // Copy input to internal buffers
+    CUDA_CHECK(cudaMemcpy(d_X, d_input, batch_size * seq_len * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(d_KV, d_input, batch_size * seq_len * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+
+    // Copy mask if provided
+    if (d_mask_input != nullptr && d_mask != nullptr) {
+        CUDA_CHECK(cudaMemcpy(d_mask, d_mask_input, seq_len * seq_len * sizeof(float),
+                             cudaMemcpyDeviceToDevice));
+    }
+
+    // Forward pass (result written to d_X)
+    forward_device(batch_size, seq_len, seq_len);
+
+    // Copy result to output
+    CUDA_CHECK(cudaMemcpy(d_output, d_X, batch_size * seq_len * d_model * sizeof(float),
+                         cudaMemcpyDeviceToDevice));
+}
+
 void MultiHeadAttention::save_parameters(const char* filename) {
     std::ofstream file(filename, std::ios::binary);
     if (!file.is_open()) {

@@ -51,6 +51,18 @@ public:
         const float* h_mask = nullptr
     );
 
+    // Forward pass - Device to device (for use in larger models)
+    // d_input: input [B, N, d_model] (already on device)
+    // d_output: output [B, N, d_model] (already on device)
+    // d_mask_input: optional mask [N, N] (already on device, can be nullptr)
+    void forward_device_to_device(
+        const float* d_input,
+        float* d_output,
+        int batch_size,
+        int seq_len,
+        const float* d_mask_input = nullptr
+    );
+
     // Save/load parameters
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);

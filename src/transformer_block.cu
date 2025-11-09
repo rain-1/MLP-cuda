@@ -210,28 +210,8 @@ void TransformerBlock::forward_device(
                batch_size, seq_len, d_model);
 
     // 2. Multi-head self-attention
-    // Copy normalized input to attention buffers
-    CUDA_CHECK(cudaMemcpy(attention->d_X, d_attn_normed,
-                         batch_size * seq_len * d_model * sizeof(float),
-                         cudaMemcpyDeviceToDevice));
-    CUDA_CHECK(cudaMemcpy(attention->d_KV, d_attn_normed,
-                         batch_size * seq_len * d_model * sizeof(float),
-                         cudaMemcpyDeviceToDevice));
-
-    // Optionally copy mask if provided
-    if (d_mask != nullptr && attention->d_mask != nullptr) {
-        CUDA_CHECK(cudaMemcpy(attention->d_mask, d_mask,
-                             seq_len * seq_len * sizeof(float),
-                             cudaMemcpyDeviceToDevice));
-    }
-
-    // Forward pass (result written to attention->d_X)
-    attention->forward_device(batch_size, seq_len, seq_len);
-
-    // Copy attention output
-    CUDA_CHECK(cudaMemcpy(d_attn_output, attention->d_X,
-                         batch_size * seq_len * d_model * sizeof(float),
-                         cudaMemcpyDeviceToDevice));
+    attention->forward_device_to_device(d_attn_normed, d_attn_output,
+                                       batch_size, seq_len, d_mask);
 
     // 3. Add residual connection: attn_output = input + attn_output
     int total_size = batch_size * seq_len * d_model;
