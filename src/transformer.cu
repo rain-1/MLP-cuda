@@ -144,7 +144,7 @@ void Transformer::allocate_memory() {
 
     // Generation buffers
     CUDA_CHECK(cudaMalloc(&d_token_ids, max_batch_size * max_seq_len * sizeof(int)));
-    CUDA_CHECK(cudaMalloc(&d_logits_buffer, max_batch_size * vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_logits_buffer, max_batch_size * max_seq_len * vocab_size * sizeof(float)));
 }
 
 void Transformer::free_memory() {
@@ -381,7 +381,7 @@ std::vector<int> Transformer::generate(
     std::vector<int> result = prompt;
     unsigned int rng_state = seed;
 
-    float* h_logits = new float[vocab_size];
+    float* h_logits = new float[max_seq_len * vocab_size];
 
     for (int i = 0; i < max_new_tokens; i++) {
         // Get current sequence length
