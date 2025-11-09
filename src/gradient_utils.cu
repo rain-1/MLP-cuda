@@ -1,5 +1,5 @@
 #include "gradient_utils.h"
-#include "cuda_utils.h"
+#include "matrix_ops.h"  // For CUDA_CHECK macro
 #include <cmath>
 #include <float.h>
 
