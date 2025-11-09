@@ -116,9 +116,9 @@ int main(int argc, char** argv) {
                 break;
             }
 
-            // Compute loss (forward pass only - no backward yet)
-            float loss = model.compute_loss(inputs.data(), targets.data(),
-                                           batch_size, seq_len);
+            // Training step: forward + backward + optimizer update
+            float loss = model.train_step(inputs.data(), targets.data(),
+                                         batch_size, seq_len, learning_rate);
 
             total_loss += loss;
             num_samples++;
@@ -173,10 +173,6 @@ int main(int argc, char** argv) {
     }
 
     printf("=== Training demo complete! ===\n");
-
-    printf("\nNOTE: This is a forward-pass only demo. The model is not actually learning\n");
-    printf("because backward passes are not yet implemented. Loss values show the\n");
-    printf("performance of the randomly initialized model.\n");
 
     return 0;
 }
