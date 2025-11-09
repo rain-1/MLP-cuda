@@ -545,3 +545,201 @@ void Transformer::load_parameters(const char* filename) {
         blocks[i]->load_parameters(block_file.c_str());
     }
 }
+
+// ============================================================================
+// Training Implementation
+// ============================================================================
+
+void Transformer::allocate_gradient_buffers() {
+    // Initialize gradient buffers to nullptr first
+    d_grad_token_embeddings = nullptr;
+    d_grad_position_embeddings = nullptr;
+    d_grad_output_weights = nullptr;
+    d_grad_output_bias = nullptr;
+    d_grad_ln_final_gamma = nullptr;
+    d_grad_ln_final_beta = nullptr;
+
+    // Allocate gradient buffers
+    CUDA_CHECK(cudaMalloc(&d_grad_token_embeddings, vocab_size * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_position_embeddings, max_seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_output_weights, d_model * vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_output_bias, vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_ln_final_gamma, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_ln_final_beta, d_model * sizeof(float)));
+
+    // Zero out gradient buffers
+    CUDA_CHECK(cudaMemset(d_grad_token_embeddings, 0, vocab_size * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_grad_position_embeddings, 0, max_seq_len * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_grad_output_weights, 0, d_model * vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_grad_output_bias, 0, vocab_size * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_grad_ln_final_gamma, 0, d_model * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_grad_ln_final_beta, 0, d_model * sizeof(float)));
+}
+
+void Transformer::free_gradient_buffers() {
+    if (d_grad_token_embeddings) cudaFree(d_grad_token_embeddings);
+    if (d_grad_position_embeddings) cudaFree(d_grad_position_embeddings);
+    if (d_grad_output_weights) cudaFree(d_grad_output_weights);
+    if (d_grad_output_bias) cudaFree(d_grad_output_bias);
+    if (d_grad_ln_final_gamma) cudaFree(d_grad_ln_final_gamma);
+    if (d_grad_ln_final_beta) cudaFree(d_grad_ln_final_beta);
+
+    d_grad_token_embeddings = nullptr;
+    d_grad_position_embeddings = nullptr;
+    d_grad_output_weights = nullptr;
+    d_grad_output_bias = nullptr;
+    d_grad_ln_final_gamma = nullptr;
+    d_grad_ln_final_beta = nullptr;
+}
+
+void Transformer::backward(
+    const int* d_token_ids,
+    const int* d_targets,
+    int batch_size,
+    int seq_len
+) {
+    // NOTE: Forward pass must have been called before this!
+    // The forward pass fills d_block_output, d_normed, etc.
+
+    int total_tokens = batch_size * seq_len;
+    int total_logits = total_tokens * vocab_size;
+
+    // Allocate gradient buffers if not already allocated
+    if (d_grad_token_embeddings == nullptr) {
+        allocate_gradient_buffers();
+    } else {
+        // Zero out gradients for this iteration
+        CUDA_CHECK(cudaMemset(d_grad_token_embeddings, 0, vocab_size * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_grad_position_embeddings, 0, max_seq_len * d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_grad_output_weights, 0, d_model * vocab_size * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_grad_output_bias, 0, vocab_size * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_grad_ln_final_gamma, 0, d_model * sizeof(float)));
+        CUDA_CHECK(cudaMemset(d_grad_ln_final_beta, 0, d_model * sizeof(float)));
+    }
+
+    // Temporary gradient buffers
+    float *d_grad_logits, *d_grad_normed, *d_grad_block_out;
+    float *d_grad_embeddings;
+
+    CUDA_CHECK(cudaMalloc(&d_grad_logits, total_logits * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_normed, total_tokens * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_block_out, total_tokens * d_model * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_grad_embeddings, total_tokens * d_model * sizeof(float)));
+
+    // ========================================================================
+    // 1. Compute gradient of loss w.r.t. logits
+    // ========================================================================
+
+    lm_cross_entropy_gradient(
+        d_logits_buffer,  // logits [batch_size, seq_len, vocab_size]
+        d_targets,         // targets [batch_size, seq_len]
+        d_grad_logits,     // gradient output
+        batch_size, seq_len, vocab_size,
+        nullptr            // no mask
+    );
+
+    // ========================================================================
+    // 2. Backward through output projection: logits = normed · W_out^T + b_out
+    // ========================================================================
+
+    sum_rows(d_grad_logits, d_grad_output_bias, total_tokens, vocab_size);
+    matmul_transB_backward(
+        d_grad_logits,        // grad_C [total_tokens x vocab_size]
+        d_normed,             // A [total_tokens x d_model]
+        d_output_weights,     // B [vocab_size x d_model]
+        d_grad_normed,        // grad_A [total_tokens x d_model]
+        d_grad_output_weights, // grad_B [vocab_size x d_model]
+        total_tokens,         // M
+        d_model,              // K
+        vocab_size            // N
+    );
+
+    // ========================================================================
+    // 3. Backward through final layer norm
+    // ========================================================================
+
+    layer_norm_backward(
+        d_grad_normed,           // Gradient w.r.t. output
+        d_block_output,          // Input (last block output)
+        d_ln_final_gamma,        // Gamma
+        d_grad_block_out,        // Gradient w.r.t. input
+        d_grad_ln_final_gamma,   // Gradient w.r.t. gamma
+        d_grad_ln_final_beta,    // Gradient w.r.t. beta
+        batch_size, seq_len, d_model,
+        1e-5f
+    );
+
+    // ========================================================================
+    // 4. Backward through transformer blocks (in reverse order)
+    // ========================================================================
+
+    // NOTE: This is simplified! In reality, we need to allocate gradient buffers
+    // for all block parameters. For now, this is a skeleton implementation.
+
+    // TODO: Implement full block backward pass with gradient accumulation
+    // For each block in reverse:
+    //   - Allocate gradient buffers for block parameters
+    //   - Call block->backward_device()
+    //   - Update parameters using optimizer
+
+    printf("WARNING: TransformerBlock backward not yet integrated into Transformer::backward()\n");
+
+    // ========================================================================
+    // 5. Backward through embeddings
+    // ========================================================================
+
+    // For now, gradient flows to d_grad_embeddings (placeholder)
+    // TODO: Implement embedding backward pass
+    // - Split d_grad_embeddings into token and position gradients
+    // - Accumulate to d_grad_token_embeddings and d_grad_position_embeddings
+
+    // Cleanup
+    CUDA_CHECK(cudaFree(d_grad_logits));
+    CUDA_CHECK(cudaFree(d_grad_normed));
+    CUDA_CHECK(cudaFree(d_grad_block_out));
+    CUDA_CHECK(cudaFree(d_grad_embeddings));
+}
+
+float Transformer::train_step(
+    const int* h_token_ids,
+    const int* h_targets,
+    int batch_size,
+    int seq_len,
+    float learning_rate
+) {
+    // Copy inputs to device
+    int* d_token_ids_train;
+    int* d_targets_train;
+    CUDA_CHECK(cudaMalloc(&d_token_ids_train, batch_size * seq_len * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_targets_train, batch_size * seq_len * sizeof(int)));
+    CUDA_CHECK(cudaMemcpy(d_token_ids_train, h_token_ids, batch_size * seq_len * sizeof(int),
+                         cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(d_targets_train, h_targets, batch_size * seq_len * sizeof(int),
+                         cudaMemcpyHostToDevice));
+
+    // Forward pass
+    forward_device(d_token_ids_train, d_logits_buffer, batch_size, seq_len);
+
+    // Compute loss
+    float loss = lm_cross_entropy_loss(
+        d_logits_buffer, d_targets_train,
+        batch_size, seq_len, vocab_size,
+        nullptr
+    );
+
+    // Backward pass
+    backward(d_token_ids_train, d_targets_train, batch_size, seq_len);
+
+    // TODO: Apply optimizer updates (Adam)
+    // For now, just a simple SGD update on embeddings and output projection
+    // scale_matrix(d_grad_token_embeddings, -learning_rate, vocab_size * d_model);
+    // elementwise_add(d_token_embeddings, d_grad_token_embeddings, d_token_embeddings, vocab_size * d_model);
+
+    printf("WARNING: Optimizer updates not yet implemented in train_step()\n");
+
+    // Cleanup
+    CUDA_CHECK(cudaFree(d_token_ids_train));
+    CUDA_CHECK(cudaFree(d_targets_train));
+
+    return loss;
+}

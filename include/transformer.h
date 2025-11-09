@@ -70,6 +70,23 @@ public:
         int seq_len
     );
 
+    // Backward pass - computes gradients
+    void backward(
+        const int* d_token_ids,    // Input tokens [batch_size, seq_len]
+        const int* d_targets,      // Target tokens [batch_size, seq_len]
+        int batch_size,
+        int seq_len
+    );
+
+    // Training step - forward + backward + optimizer update
+    float train_step(
+        const int* h_token_ids,    // [batch_size, seq_len]
+        const int* h_targets,      // [batch_size, seq_len]
+        int batch_size,
+        int seq_len,
+        float learning_rate
+    );
+
     void save_parameters(const char* filename);
     void load_parameters(const char* filename);
 
@@ -112,10 +129,20 @@ private:
 
     // Generation buffers
     int* d_token_ids;               // [batch_size, max_seq_len]
-    float* d_logits_buffer;         // [batch_size, vocab_size]
+    float* d_logits_buffer;         // [batch_size, max_seq_len, vocab_size]
+
+    // Gradient buffers (allocated on demand for training)
+    float* d_grad_token_embeddings;   // [vocab_size, d_model]
+    float* d_grad_position_embeddings; // [max_seq_len, d_model]
+    float* d_grad_output_weights;     // [d_model, vocab_size]
+    float* d_grad_output_bias;        // [vocab_size]
+    float* d_grad_ln_final_gamma;     // [d_model]
+    float* d_grad_ln_final_beta;      // [d_model]
 
     void allocate_memory();
     void free_memory();
+    void allocate_gradient_buffers();
+    void free_gradient_buffers();
 
     // Helper for generating next token
     int sample_token(
